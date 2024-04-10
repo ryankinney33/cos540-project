@@ -25,8 +25,8 @@ grade in COS 540.
 --------------------
 1. Server opens listening TCP socket and waits for connection
 2. Client connects to server.
-3. Client sends UDP Information packet.
-4. Server sends File Information packet.
+3. Server sends File Information packet.
+4. Client sends UDP Information packet.
 
 2.1.2 Data Transmission (server-side)
 -------------------------------------
@@ -90,17 +90,17 @@ indicating the contents of the remainder of the packet.
 ------------------------------
 This packet is transmitted from the client to the server. It
 communicates the UDP IP address and port, along with the block size.
-The UDP information packet is 8 octets in length.
+The UDP information packet is 6 octets in length.
 
 Format
 ------
                  0      7 8     15 16    23 24      31
-                +--------+--------+--------+----+----+
-                |           Control Header           |
-                +--------+--------+--------+----+----+
-                |   Destination   |  File Block |Pad |
-                |      Port       |     Size    |    |
-                +--------+--------+--------+----+----+
+                +--------+--------+--------+--------+
+                |           Control Header          |
+                +--------+--------+--------+--------+
+                |   Destination   |
+                |      Port       |
+                +--------+--------+
                     UDP Information Packet Format
 
 Fields
@@ -109,35 +109,37 @@ Destination Port: 16 bits
   Indicates the port at which the client is expecting data packets from
   the server. Destination port is 16 bits long.
 
-File Block Size: 12 bits
-  The length in octets of each block of data from the server minus one.
-  This gives a range of 1 to 4096 octets per block. The final block in
-  the transmission is allowed to be shorter than the wanted block size.
-
-Pad: 4 bits
-  Used to ensure the packet length ends on a 32 bit boundary. The
-  padding is zero.
-
 3.1.3 File Information Packet
 -------------------------------
 This packet is transmitted from the server to the client. It
 communicates the number of blocks in the file being transmitted. The
-File Information Packet is 8 octets in length.
+File Information Packet is 10 octets in length.
 
 Format
 ------
                   0      7 8     15 16    23 24    31
-                 +--------+--------+--------+--------+
-                 |           Control Header          |
-                 +--------+--------+--------+--------+
-                 |          Number of Blocks         |
-                 +--------+--------+--------+--------+
+                 +--------+----+----+--------+--------+
+                 |           Control Header           |
+                 +--------+----+----+--------+--------+
+                 |          Number of Blocks          |
+                 +----+----+--------+--------+--------+
+                 | Pad|  Block Size |
+                 +----+----+--------+
 	                   File Information Packet Format
 Fields
 ------
 Number of Blocks: 32 bits
   One less than the number of blocks in the file. This gives a range of
   1 - 4,294,967,296 blocks in the file.
+
+Pad: 4 bits
+  Padding such that the packet length ends on an octet boundary. The
+  padding is zero.
+
+Block Size: 12 bits
+  The length in octets of each block of data from the server minus one.
+  This gives a range of 1 to 4096 octets per block. The final block in
+  the transmission is allowed to be shorter than the wanted block size.
 
 3.1.4 ACK Packets
 -----------------

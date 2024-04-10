@@ -21,12 +21,12 @@ typedef struct ControlHeader {
 typedef struct UDPInformationPacket {
 	ControlHeader_t header;
 	uint16_t destination_port;
-	uint16_t blocksize: 12;
 } UDPInformationPacket_t;
 
 typedef struct FileInformationPacket {
 	ControlHeader_t header;
 	uint32_t num_blocks;
+	uint16_t blocksize: 12;
 } FileInformationPacket_t;
 
 typedef struct ACKPacket {
