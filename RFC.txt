@@ -18,7 +18,7 @@ grade in COS 540.
 2 Overview
 ==========
 
-2.1 Model of Operation
+2.1 Protocol Operation
 ----------------------
 
 2.1.1 Initialization
@@ -28,21 +28,55 @@ grade in COS 540.
 3. Client sends UDP Information packet.
 4. Server sends File Information packet.
 
-2.1.2 Data Transmission (Server)
---------------------------------
-1. Server sends all the blocks of the file
-2. Server sends the All Sent packet
-3. Client sends either the acknowledgement packet or tje
+2.1.2 Data Transmission (server-side)
+-------------------------------------
+1. Server sends all the blocks of the file to the client
+2. Server sends the All Sent packet to the client
+3. Receive an ACK packet or "All Received" from client
+4. If an All-Received packet is received, go to Step 9. If an ACK
+   packet is received, proceed to step 5.
+5. Figure out which blocks the client is missing from the ACK packet.
+6. Send all missing blocks to the client.
+7. Send All Sent packet.
+8. Go to step 3.
+9. Transmission complete, close TCP connection to client.
 
+2.1.3 Data Transmission (client-side)
+-------------------------------------
+1. Receive blocks from the server until there are no more UDP packets
+   being received and the All Sent packet is received.
+2. Determine which blocks are missing. If there are no blocks missing,
+   go to step 5. Otherwise, proceed to step 3.
+3. Send an ACK packet for the appropriate ACK mode.
+4. Go to Step 1.
+5. Send an All Received Packet.
+6. Transmission complete, close connection to the server.
 
 3 Specification
 ===============
 
 3.1 Packet Formats
 ------------------
+There are two types of packets: control packets and data packets. The
+control packets are communicated over a TCP connection, and the data
+packets are sent through UDP.
 
-3.1.1 UDP Information Packet
-----------------------------
+
+3.1.2 Control Packets
+---------------------
+All control packets are preceded by a PDP-11 header. Control packets
+include the UDP Information Packet, the File Information Packet, the
+ACK packet, the All Sent packet, and the All Received Packet.
+
+3.1.2.1 PDP-11 Header
+---------------------
+ 0      7 8     15 16    24 24    31
++--------+--------+--------+--------+
+|   P    |    D   |   P    |  Type  |
++--------+--------+--------+--------+
+
+3.1.2.2 UDP Information Packet
+------------------------------
 This packet is transmitted from the client to the server. It
 communicates the UDP IP address and port, along with the block size.
 The UDP information packet is 8 octets in length.
@@ -50,12 +84,12 @@ The UDP information packet is 8 octets in length.
 Format
 ------
                  0      7 8     15 16    23 24      31
-                +--------+--------+--------+----+-+---+
-                |         Destination Address         |
-                +--------+--------+--------+----+-+---+
-                |   Destination   |  File Block |A|Pad|
-                |      Port       |     Size    |M|   |
-                +--------+--------+--------+----+-+---+
+                +--------+--------+--------+----+----+
+                |         Destination Address        |
+                +--------+--------+--------+----+----+
+                |   Destination   |  File Block |Pad |
+                |      Port       |     Size    |    |
+                +--------+--------+--------+----+----+
                       UDP Information Packet Format
 
 Fields
@@ -74,17 +108,12 @@ File Block Size: 12 bits
   This gives a range of 1 to 4096 octets per block. The final block in
   the transmission is allowed to be shorter than the wanted block size.
 
-AM: 1 bit
-  The acknowledgement mode of the transaction. If 1, negative
-  acknowledgement (NACK) is used, otherwise selective acknowledgement
-  (SACK) is used.
-
-Pad: 3 bits
+Pad: 4 bits
   Used to ensure the packet length ends on a 32 bit boundary. The
   padding is zero.
 
-3.1.2 File Information Packet
----------------------------
+3.1.2.3 File Information Packet
+-------------------------------
 This packet is transmitted from the server to the client. It
 communicates the number of blocks in the file being transmitted. The
 File Information Packet is 8 octets in length.
@@ -108,4 +137,5 @@ Number of Blocks: 32 bits
 Data Transmission Order
 =======================
 For numeric quantities, the octet order is the same as the underlying
-network order.
+network order. This document assumes the most significant byte is the
+left-most, or first recevied (big endian).
