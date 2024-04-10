@@ -11,6 +11,8 @@
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
 
+/* SACK AND ACK SHOULD BE A COMMAND LINE ARGUMENT */
+
 int main() {
 	printf("Client!\n");
 	return 0;
