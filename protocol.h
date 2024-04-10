@@ -10,33 +10,33 @@ typedef enum PType {
 	SACK,
 	NACK,
 	COMPLETE
-} PType_t;
+} __attribute__((packed)) PType_t;
 
 /* Control Packet Definitions */
 typedef struct ControlHeader {
 	char head[3]; /* Will contain "PDP" */
-	PType_t type: 8;
-} ControlHeader_t;
+	PType_t type;
+} __attribute__((packed)) ControlHeader_t;
 
 typedef struct UDPInformationPacket {
 	ControlHeader_t header;
 	uint16_t destination_port;
-} UDPInformationPacket_t;
+} __attribute__((packed)) UDPInformationPacket_t;
 
 typedef struct FileInformationPacket {
 	ControlHeader_t header;
 	uint32_t num_blocks;
-	uint16_t blocksize: 12;
-} FileInformationPacket_t;
+	uint16_t blocksize;
+} __attribute__((packed)) FileInformationPacket_t;
 
 typedef struct ACKPacket {
 	ControlHeader_t header;
 	uint32_t length;
 	uint32_t ack_stream[];
-} ACKPacket_t;
+} __attribute__((packed)) ACKPacket_t;
 
 typedef ControlHeader_t CompletePacket_t;
 
-#define CONTROLHEADER_DEFAULT {.head={'P','D','P'}, .type=COMPLETE}
+#define CONTROL_HEADER_DEFAULT {.head={'P','D','P'}, .type=COMPLETE}
 
 #endif /* PROTOCOL_H */
