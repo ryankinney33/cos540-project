@@ -37,4 +37,6 @@ typedef struct ACKPacket {
 
 typedef ControlHeader_t CompletePacket_t;
 
+#define CONTROLHEADER_DEFAULT {.head={'P','D','P'}, .type=COMPLETE}
+
 #endif /* PROTOCOL_H */
