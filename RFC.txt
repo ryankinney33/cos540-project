@@ -31,25 +31,25 @@ grade in COS 540.
 2.1.2 Data Transmission (server-side)
 -------------------------------------
 1. Server sends all the blocks of the file to the client
-2. Server sends the All Sent packet to the client
-3. Receive an ACK packet or "All Received" from client
-4. If an All-Received packet is received, go to Step 9. If an ACK
+2. Server sends a Complete packet to the client
+3. Receive an ACK packet or Complete packet from client
+4. If a Complete packet is received, go to Step 9. If an ACK
    packet is received, proceed to step 5.
 5. Figure out which blocks the client is missing from the ACK packet.
 6. Send all missing blocks to the client.
-7. Send All Sent packet.
+7. Send Complete packet.
 8. Go to step 3.
 9. Transmission complete, close TCP connection to client.
 
 2.1.3 Data Transmission (client-side)
 -------------------------------------
 1. Receive blocks from the server until there are no more UDP packets
-   being received and the All Sent packet is received.
+   being received and the Complete packet is received.
 2. Determine which blocks are missing. If there are no blocks missing,
    go to step 5. Otherwise, proceed to step 3.
 3. Send an ACK packet for the appropriate ACK mode.
 4. Go to Step 1.
-5. Send an All Received Packet.
+5. Send a Complete Packet.
 6. Transmission complete, close connection to the server.
 
 3 Specification
@@ -61,21 +61,32 @@ There are two types of packets: control packets and data packets. The
 control packets are communicated over a TCP connection, and the data
 packets are sent through UDP.
 
-
-3.1.2 Control Packets
----------------------
-All control packets are preceded by a PDP-11 header. Control packets
+All control packets are preceded by a Control header. Control packets
 include the UDP Information Packet, the File Information Packet, the
-ACK packet, the All Sent packet, and the All Received Packet.
+ACK packet, and the Complete Packet.
 
-3.1.2.1 PDP-11 Header
+3.1.1 Control Header
 ---------------------
+The Control header is 4 octets long, and consists of a 3 octet preamble
+and an identification number specifying the payload type.
+
  0      7 8     15 16    24 24    31
 +--------+--------+--------+--------+
-|   P    |    D   |   P    |  Type  |
+|   P    |   D    |   P    |  PType |
 +--------+--------+--------+--------+
+|           Packet Payload
++--------- ...
 
-3.1.2.2 UDP Information Packet
+The preamble consists of 3 octets, equivalent to the US-ASCII
+character sequence "PDP". The PType field is a numerical value
+indicating the contents of the remainder of the packet.
+  0: UDP Information
+  1: File Information
+  2: SACK
+  3: NACK
+  4: Complete
+
+3.1.2 UDP Information Packet
 ------------------------------
 This packet is transmitted from the client to the server. It
 communicates the UDP IP address and port, along with the block size.
@@ -85,20 +96,15 @@ Format
 ------
                  0      7 8     15 16    23 24      31
                 +--------+--------+--------+----+----+
-                |         Destination Address        |
+                |           Control Header           |
                 +--------+--------+--------+----+----+
                 |   Destination   |  File Block |Pad |
                 |      Port       |     Size    |    |
                 +--------+--------+--------+----+----+
-                      UDP Information Packet Format
+                    UDP Information Packet Format
 
 Fields
 ------
-Destination Address: 32 bits
-  An optional field. When meaningful, it indicates the address of the
-  client. If not used, a value of zero is inserted and the address is
-  assumed to be the same as TCP client.
-
 Destination Port: 16 bits
   Indicates the port at which the client is expecting data packets from
   the server. Destination port is 16 bits long.
@@ -112,7 +118,7 @@ Pad: 4 bits
   Used to ensure the packet length ends on a 32 bit boundary. The
   padding is zero.
 
-3.1.2.3 File Information Packet
+3.1.3 File Information Packet
 -------------------------------
 This packet is transmitted from the server to the client. It
 communicates the number of blocks in the file being transmitted. The
@@ -122,20 +128,55 @@ Format
 ------
                   0      7 8     15 16    23 24    31
                  +--------+--------+--------+--------+
+                 |           Control Header          |
+                 +--------+--------+--------+--------+
                  |          Number of Blocks         |
                  +--------+--------+--------+--------+
-                 |       Acknowledgement Delay       |
-                 +--------+--------+--------+--------+
-	             File Information Packet Format
+	                   File Information Packet Format
 Fields
 ------
 Number of Blocks: 32 bits
   One less than the number of blocks in the file. This gives a range of
   1 - 4,294,967,296 blocks in the file.
 
+3.1.4 ACK Packets
+-----------------
+This packet is transmitted from the client to the server. It identifies
+which blocks have been received and which ones are missing. The type of
+acknowledgement used is identified from the the PDP-11 header. The
+length of the ACK packet is variable, but is no greater than 8 more
+than the total number of blocks (8 + Number of blocks octets long).
+
+Format
+------
+                  0      7 8     15 16    23 24    31
+                 +--------+--------+--------+--------+
+                 |           Control Header          |
+                 +--------+--------+--------+--------+
+                 |         ACK Stream Length         |
+                 +--------+--------+--------+--------+
+                 |             ACK Stream            |
+                 +--------+--------+--------+--------+
+	                         ACK Packet Format
+
+Fields
+------
+ACK Stream Length: 32 bits
+  The number of octets in the ACK Stream.
+
+Ack Stream: variable
+  In SACK mode, it is the bitmap representing which blocks the client
+  has received. In NACK mode, it is the list of block indexes that have
+  not been received by the client.
+
+3.1.5 Complete Packet
+---------------------
+This packet is sent when the server has sent all the blocks and when
+the client has received all blocks. It consists of only the Control
+Header with the PType field set to Complete. It is 4 octets long.
 
 Data Transmission Order
 =======================
 For numeric quantities, the octet order is the same as the underlying
-network order. This document assumes the most significant byte is the
-left-most, or first recevied (big endian).
+network order. This document assumes the most significant octet is the
+left-most, or first received (big endian).
