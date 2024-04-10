@@ -1,0 +1,111 @@
+RFC: COS 540                                                  R. Kinney
+                                                    University of Maine
+                                                          26 April 2024
+
+                   Problematic Data Protocol 11
+
+
+1 Introduction
+================
+This Problematic Data Protocol 11 (PDP-11) is designed to efficiently
+send a file from a server to connected clients. This document assumes
+the Internet Protocol (IP) is the underlying protocol. Two connections
+are used for sending the file; the Transmission Control Protocol (TCP)
+for control information and the User Datagram Protocol (UDP) for data
+transmission. The motivation behind this protocol is to get a good
+grade in COS 540.
+
+2 Overview
+==========
+
+2.1 Model of Operation
+----------------------
+
+2.1.1 Initialization
+--------------------
+1. Server opens listening TCP socket and waits for connection
+2. Client connects to server.
+3. Client sends UDP Information packet.
+4. Server sends File Information packet.
+
+2.1.2 Data Transmission (Server)
+--------------------------------
+1. Server sends all the blocks of the file
+2. Server sends the All Sent packet
+3. Client sends either the acknowledgement packet or tje
+
+
+3 Specification
+===============
+
+3.1 Packet Formats
+------------------
+
+3.1.1 UDP Information Packet
+----------------------------
+This packet is transmitted from the client to the server. It
+communicates the UDP IP address and port, along with the block size.
+The UDP information packet is 8 octets in length.
+
+Format
+------
+                 0      7 8     15 16    23 24      31
+                +--------+--------+--------+----+-+---+
+                |         Destination Address         |
+                +--------+--------+--------+----+-+---+
+                |   Destination   |  File Block |A|Pad|
+                |      Port       |     Size    |M|   |
+                +--------+--------+--------+----+-+---+
+                      UDP Information Packet Format
+
+Fields
+------
+Destination Address: 32 bits
+  An optional field. When meaningful, it indicates the address of the
+  client. If not used, a value of zero is inserted and the address is
+  assumed to be the same as TCP client.
+
+Destination Port: 16 bits
+  Indicates the port at which the client is expecting data packets from
+  the server. Destination port is 16 bits long.
+
+File Block Size: 12 bits
+  The length in octets of each block of data from the server minus one.
+  This gives a range of 1 to 4096 octets per block. The final block in
+  the transmission is allowed to be shorter than the wanted block size.
+
+AM: 1 bit
+  The acknowledgement mode of the transaction. If 1, negative
+  acknowledgement (NACK) is used, otherwise selective acknowledgement
+  (SACK) is used.
+
+Pad: 3 bits
+  Used to ensure the packet length ends on a 32 bit boundary. The
+  padding is zero.
+
+3.1.2 File Information Packet
+---------------------------
+This packet is transmitted from the server to the client. It
+communicates the number of blocks in the file being transmitted. The
+File Information Packet is 8 octets in length.
+
+Format
+------
+                  0      7 8     15 16    23 24    31
+                 +--------+--------+--------+--------+
+                 |          Number of Blocks         |
+                 +--------+--------+--------+--------+
+                 |       Acknowledgement Delay       |
+                 +--------+--------+--------+--------+
+	             File Information Packet Format
+Fields
+------
+Number of Blocks: 32 bits
+  One less than the number of blocks in the file. This gives a range of
+  1 - 4,294,967,296 blocks in the file.
+
+
+Data Transmission Order
+=======================
+For numeric quantities, the octet order is the same as the underlying
+network order.
