@@ -118,9 +118,9 @@ File Information Packet is 10 octets in length.
 Format
 ------
                   0      7 8     15 16    23 24    31
-                 +--------+----+----+--------+--------+
+                 +----+----+--------+--------+--------+
                  |           Control Header           |
-                 +--------+----+----+--------+--------+
+                 +----+----+--------+--------+--------+
                  |          Number of Blocks          |
                  +----+----+--------+--------+--------+
                  | Pad|  Block Size |
@@ -133,8 +133,8 @@ Number of Blocks: 32 bits
   1 - 4,294,967,296 blocks in the file.
 
 Pad: 4 bits
-  Padding such that the packet length ends on an octet boundary. The
-  padding is zero.
+  Padding such that the end of the packet lands on an octet boundary.
+  The padding is zero.
 
 Block Size: 12 bits
   The length in octets of each block of data from the server minus one.
