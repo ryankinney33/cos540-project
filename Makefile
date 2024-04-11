@@ -1,12 +1,10 @@
-
 CFLAGS := -Wall -Wextra -g -pipe
 
 .PHONY: all clean
-
 all: server client
 
-server: server.c
-client: client.c
+server: server.o
+client: client.o
 
 clean:
-	$(RM) server client
+	$(RM) server server.o client client.o
