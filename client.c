@@ -134,10 +134,26 @@ int main() {
 
 	recv(tcp_sock, &f_info, sizeof(f_info), 0);
 
-	printf("Blocksize: %hu\n", ntohs(f_info.blocksize) + 1);
-	printf("Number of blocks in file: %u\n", ntohl(f_info.num_blocks) + 1);
+	uint32_t blocksize = ntohs(f_info.blocksize) + 1;
+	uint32_t num_blocks = ntohl(f_info.num_blocks) + 1;
+
+	printf("Blocksize: %hu\n", blocksize);
+	printf("Number of blocks in file: %u\n", num_blocks);
 
 	send(tcp_sock, &udp_info, sizeof(udp_info), 0);
+
+	size_t data_block_len = sizeof(FileBlockPacket_t) + blocksize + 1;
+	FileBlockPacket_t *data_block = malloc(data_block_len);
+	data_block->data_stream[blocksize] = '\0';
+	ssize_t tmp;
+	tmp = recvfrom(udp_sock, data_block, data_block_len, 0, NULL, NULL);
+	data_block->data_stream[tmp - sizeof(FileBlockPacket_t)] = '\0';
+
+	printf("%s", data_block->data_stream);
+	tmp = recvfrom(udp_sock, data_block, data_block_len, 0, NULL, NULL);
+	data_block->data_stream[tmp - sizeof(FileBlockPacket_t)] = '\0';
+	printf("%s", data_block->data_stream);
+
 
 	close(tcp_sock);
 	return 0;

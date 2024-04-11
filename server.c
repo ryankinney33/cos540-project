@@ -132,6 +132,7 @@ int main() {
 	/* file descriptors */
 	int serv_tcp_fd;
 	int client_tcp_fd;
+	int client_udp_fd;
 	int local_file_fd;
 
 	/* address */
@@ -146,6 +147,11 @@ int main() {
 	/* Open the file being transferred and build file info packet */
 	local_file_fd = open("RFC.txt", O_RDONLY); //FIXME: error check this
 	f_info = get_fileinfo(local_file_fd, blocksize);
+
+	client_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (client_udp_fd == -1) {
+		return errno;
+	}
 
 	serv_tcp_fd = get_tcp_listener(SRV_TCP_A, SRV_TCP_P);
 	if (serv_tcp_fd == -1) {
@@ -173,6 +179,17 @@ int main() {
 	recv(client_tcp_fd, &udp_info, sizeof(udp_info), 0);
 
 	printf("Client is listening on port %hu\n", ntohs(udp_info.destination_port));
+
+	/* Write the UDP port the client is using into the address structure */
+	client_addr.sin_port = udp_info.destination_port;
+
+	FileBlockPacket_t *block = malloc(sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize));
+	block->index = 0;
+	ssize_t tmp;
+	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize));
+	sendto(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize));
+	sendto(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
 
 	close(client_tcp_fd);
 	close(serv_tcp_fd);
