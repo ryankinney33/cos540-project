@@ -15,7 +15,7 @@
 /* Threading */
 #include <pthread.h>
 
-#include "protocol.h"
+#include "packets.h"
 
 /* Ideally, these would be set by the Makefile... */
 #define SRV_TCP_A   "127.0.0.1"
