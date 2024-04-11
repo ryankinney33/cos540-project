@@ -32,11 +32,17 @@ typedef struct FileInformationPacket {
 typedef struct ACKPacket {
 	ControlHeader_t header;
 	uint32_t length;
-	uint32_t ack_stream[];
+	unsigned char ack_stream[];
 } __attribute__((packed)) ACKPacket_t;
 
 typedef ControlHeader_t CompletePacket_t;
 
 #define CONTROL_HEADER_DEFAULT {.head={'P','D','P'}, .type=COMPLETE}
+
+/* Data Packet Definition */
+typedef struct FileBlockPacket {
+	uint32_t index;
+	unsigned char data_stream[];
+} __attribute__((packed)) FileBlockPacket_t;
 
 #endif /* PROTOCOL_H */

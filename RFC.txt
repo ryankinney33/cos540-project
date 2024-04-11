@@ -157,8 +157,8 @@ Format
                  +--------+--------+--------+--------+
                  |         ACK Stream Length         |
                  +--------+--------+--------+--------+
-                 |             ACK Stream            |
-                 +--------+--------+--------+--------+
+                 |           ACK Stream...
+                 +-----------------------...
 	                         ACK Packet Format
 
 Fields
@@ -177,8 +177,33 @@ This packet is sent when the server has sent all the blocks and when
 the client has received all blocks. It consists of only the Control
 Header with the PType field set to Complete. It is 4 octets long.
 
-Data Transmission Order
-=======================
+3.1.6 File Block Packet
+-----------------------
+This packet type is sent over the UDP socket and contains a block of
+of the file. The length of the packet is variable and is at least
+blocksize + 8 octets in length.
+
+Format
+------
+                  0      7 8     15 16    23 24    31
+                 +--------+--------+--------+--------+
+                 |            Block Index            |
+                 +--------+--------+--------+--------+
+                 |           Data Stream...
+                 +----------------------- ...
+                           Data Packet Format
+
+Fields
+------
+Block Index: 32 bits
+  The index of the block for ordering purposes. The first block has
+  index 0, and the last block has index N-1.
+
+Data Stream: variable
+  The octets containing the data in the file.
+
+A. Data Transmission Order
+==========================
 For numeric quantities, the octet order is the same as the underlying
 network order. This document assumes the most significant octet is the
 left-most, or first received (big endian).
