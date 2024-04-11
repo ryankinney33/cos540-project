@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <inttypes.h>
+
 /* Sockets */
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -23,20 +23,22 @@
 #define SRV_TCP_A   "0.0.0.0"
 #define SRV_TCP_P   27020
 
-#define CLI_UDP_A   "127.0.0.1"
-
 /* These are extraneous... */
 #define CLI_UDP_P   25567
+#define CLI_UDP_A   "127.0.0.1"
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
+
+/* Global constant data */
+// static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 
 /*
  * Opens a TCP socket.
  * Returns the file descriptor for the socket.
- * The address information is written into address.
  */
-static int get_tcp_listener(char *ip_addr, uint16_t port, struct sockaddr_in *address) {
+static int get_tcp_listener(char *ip_addr, uint16_t port) {
 	int fd, err;
+	struct sockaddr_in address;
 
 	/* Open the TCP socket */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -51,9 +53,9 @@ static int get_tcp_listener(char *ip_addr, uint16_t port, struct sockaddr_in *ad
 	}
 
 	/* Create address to bind to */
-	address->sin_family = AF_INET;
-	address->sin_port = htons(port);
-	err = inet_pton(AF_INET, ip_addr, &address->sin_addr);
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
 	if (err == 0) {
 		fprintf(stderr, "inet_pton: invalid IP address\n");
 		errno = EINVAL;
@@ -64,7 +66,7 @@ static int get_tcp_listener(char *ip_addr, uint16_t port, struct sockaddr_in *ad
 	}
 
 	/* Bind socket to address */
-	if (bind(fd, (struct sockaddr*)address, sizeof(*address)) == -1) {
+	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
 		perror("bind");
 		return -1;
 	}
@@ -114,10 +116,11 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 			num_blocks += 1;
 		}
 	}
+
 	printf("Using a blocksize of %hu.\n", blocksize);
 	printf("The total number of blocks is %u.\n", (uint32_t)num_blocks);
 
-	FileInformationPacket_t pkt = {.header=CONTROLHEADER_DEFAULT,
+	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_DEFAULT,
 		.num_blocks = htonl(num_blocks - 1),
 		.blocksize = htons(blocksize - 1)};
 	pkt.header.type = FILEINFO;
@@ -132,18 +135,19 @@ int main() {
 	int local_file_fd;
 
 	/* address */
-	struct sockaddr_in server_addr;
 	struct sockaddr_in client_addr;
 
-	char buf[16];
-
 	uint16_t blocksize = 4096;
-	local_file_fd = open("RFC.txt", O_RDONLY);
-	get_fileinfo(local_file_fd, blocksize);
 
-	return 0;
-	printf("Server starting up...\n");
-	serv_tcp_fd = get_tcp_listener(SRV_TCP_A, SRV_TCP_P, &server_addr);
+	/* Packets */
+	FileInformationPacket_t f_info;
+	UDPInformationPacket_t udp_info;
+
+	/* Open the file being transferred and build file info packet */
+	local_file_fd = open("RFC.txt", O_RDONLY); //FIXME: error check this
+	f_info = get_fileinfo(local_file_fd, blocksize);
+
+	serv_tcp_fd = get_tcp_listener(SRV_TCP_A, SRV_TCP_P);
 	if (serv_tcp_fd == -1) {
 		return errno;
 	}
@@ -155,11 +159,20 @@ int main() {
 		return errno;
 	}
 
-	/* Receive a buffer from the client */
-	int err = recv(client_tcp_fd, buf, 15, 0);
-	buf[err] = '\0';
+	/* Attempt to print a status message */
+	{
+		char tmp[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &client_addr.sin_addr, tmp, INET_ADDRSTRLEN);
+		printf("Received a connection from %s.\n", tmp);
+	}
 
-	printf("Received from client: %s\n", buf);
+	/* Send the file information packet to the client */
+	send(client_tcp_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this
+
+	/* Receive the UDP information packet from the client */
+	recv(client_tcp_fd, &udp_info, sizeof(udp_info), 0);
+
+	printf("Client is listening on port %hu\n", ntohs(udp_info.destination_port));
 
 	close(client_tcp_fd);
 	close(serv_tcp_fd);
