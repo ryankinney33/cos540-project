@@ -157,14 +157,16 @@ Format
                  +--------+--------+--------+--------+
                  |         ACK Stream Length         |
                  +--------+--------+--------+--------+
-                 |           ACK Stream...
-                 +-----------------------...
+                 |           ACK Stream...           |
+                 |                                   |
+                 |               ...                 |
+
 	                         ACK Packet Format
 
 Fields
 ------
 ACK Stream Length: 32 bits
-  The number of octets in the ACK Stream.
+  One less than the number of 32 bit words in the ACK Stream.
 
 Ack Stream: variable
   In SACK mode, it is the bitmap representing which blocks the client

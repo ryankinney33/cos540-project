@@ -39,9 +39,9 @@ struct udp_worker_arg {
 };
 
 /* Global data */
-// static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
-static unsigned char *block_status;
-static size_t block_status_len;
+static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
+static ACKPacket_t *sack_packet; /* Used to store the blocks received bitmap */
+static size_t num_blocks_total; /* Total number of blocks to be received */
 static volatile bool all_recv = false;
 static volatile bool done_recv = false;
 
@@ -132,6 +132,57 @@ static UDPInformationPacket_t build_udp_info(int socket_fd) {
 	return pkt;
 }
 
+/* Sets the flag for block at idx to "received" */
+static inline void set_block_status(uint32_t idx) {
+	/* idx / 32 gives word position */
+	/* idx % 32 gives bit position */
+	/* 1 << (idx % 32) sets the bit at the correct position */
+	sack_packet->ack_stream[idx / 32] |=  1 << (idx % 32);
+}
+
+/* Finds the number of blocks missing */
+static size_t get_num_missing(void) {
+	size_t count = 0; /* Counts the number of blocks received */
+
+	/* Counts the number of set bits in the SACK */
+	for (size_t idx = 0; idx < ntohl(sack_packet->length) + 1; ++idx) {
+		count += __builtin_popcount(sack_packet->ack_stream[idx]);
+	}
+
+	return num_blocks_total - count;
+}
+
+/*
+ * Scans the block_status buffer and builds an ACK packet.
+ * Returns NULL if all blocks were received.
+ */
+static ACKPacket_t *build_ACK_packet(bool isNack) {
+	ACKPacket_t *pkt = NULL;
+	size_t ack_stream_len;
+
+	/* First, determine if all packets have been found */
+	ack_stream_len = get_num_missing();
+
+	if (ack_stream_len) { /* This is nonzero if packets were missed */
+		if (isNack) {
+			/* TODO: FIX THIS!!!! */
+			return NULL;
+		} else {
+			/* SACK packet just returns the entire bitmap */
+			return sack_packet;
+		}
+	}
+
+	return pkt;
+}
+
+/************************************************************************************/
+/* Worker thread functions                                                          */
+/************************************************************************************/
+
+/*
+ * UDP thread: Read blocks of data from the UDP socket and write them to the file.
+ */
 static void *udp_listener_worker(void *arg) {
 	ssize_t read_len;
 
@@ -165,7 +216,7 @@ static void *udp_listener_worker(void *arg) {
 
 			/* Move file to correct position */
 			uint32_t idx = ntohl(f_block->index);
-			block_status[idx] = 1;
+			set_block_status(idx);
 			lseek(file_fd, idx * block_len, SEEK_SET);
 
 			/* Write the block into the file */
@@ -189,15 +240,20 @@ static void *udp_listener_worker(void *arg) {
 
 			/* Move file to correct position */
 			uint32_t idx = ntohl(f_block->index);
-			block_status[idx] = 1;
+			set_block_status(idx);
 			lseek(file_fd, idx * block_len, SEEK_SET);
 
 			/* Write the block into the file */
 			write(file_fd, f_block->data_stream, read_len - sizeof(FileBlockPacket_t));
 		}
+
 		/* just assume everything was received */
-		all_recv = true;
 		printf("Blocks received this round: %zu\n", pkt_recvcount);
+
+		ACKPacket_t *pkt = build_ACK_packet(false);
+		printf("pkt address = %p\n", pkt);
+
+		all_recv = true;
 	}
 
 	((struct udp_worker_arg*)arg)->error_code = 0;
@@ -246,12 +302,18 @@ int main() {
 		return errno;
 	}
 
-	/* Create the ack status thing (just bytes for now) */
-	block_status_len = ntohl(f_info.num_blocks) + 1;
-	block_status = calloc(block_status_len, 1);
+	/* Create the SACK bitmap */
+	num_blocks_total = ntohl(f_info.num_blocks) + 1;
+	uint32_t block_status_word_len = (num_blocks_total % 32) ? (num_blocks_total / 32 + 1) : (num_blocks_total / 32);
+	sack_packet = calloc(1, sizeof(ACKPacket_t) + block_status_word_len * sizeof(uint32_t)); /* FIXME: error check this */
+
+	/* Fill in the fields of the SACK packet */
+	sack_packet->header = done;
+	sack_packet->header.type = SACK;
+	sack_packet->length = htonl(block_status_word_len - 1);
 
 	printf("Blocksize: %zu\n", udp_arg.block_packet_len - sizeof(FileBlockPacket_t));
-	printf("Number of blocks in file: %"PRIu32"\n", ntohl(f_info.num_blocks) + 1);
+	printf("Number of blocks in file: %zu\n", num_blocks_total);
 
 	/* Spawn the UDP thread */
 	err = pthread_create(&udp_tid, NULL, udp_listener_worker, &udp_arg);
