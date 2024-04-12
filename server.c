@@ -30,7 +30,7 @@
 #define CLI_TCP_P   27021
 
 /* Global constant data */
-// static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
+static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 
 /*
  * Opens a TCP socket.
@@ -183,13 +183,18 @@ int main() {
 	/* Write the UDP port the client is using into the address structure */
 	client_addr.sin_port = udp_info.destination_port;
 
-	FileBlockPacket_t *block = malloc(sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize));
+	FileBlockPacket_t *block = malloc(sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1);
 	block->index = 0;
 	ssize_t tmp;
-	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize));
+	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize) + 1);
+	block->index = htonl(0);
 	sendto(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
-	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize));
+	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize) + 1);
+	block->index = htonl(1);
 	sendto(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+
+	/* Send the complete packet */
+	send(client_tcp_fd, &done, sizeof(done), 0);
 
 	close(client_tcp_fd);
 	close(serv_tcp_fd);
