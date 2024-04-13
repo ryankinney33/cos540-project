@@ -17,6 +17,7 @@
 
 /* Threading */
 #include <pthread.h>
+#include <sched.h>
 
 #include "packets.h"
 
@@ -42,12 +43,17 @@ struct udp_worker_arg {
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 static ACKPacket_t *sack_packet; /* Used to store the blocks received bitmap */
 static size_t num_blocks_total; /* Total number of blocks to be received */
-static volatile bool all_recv = false;
-static volatile bool done_recv = false;
+static volatile bool file_complete = false; /* All the blocks have been received */
+static volatile bool round_over = false; /* All blocks in current round received */
+static volatile bool complete_recv = false; /* A "Complete" packet from server received */
 
 /* Locks */
 // static pthread_mutex_t all_recv_lock = PTHREAD_MUTEX_INITIALIZER;
 // static pthread_mutex_t done_recv_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/*******************************************************************************************/
+/* Utility functions                                                                       */
+/*******************************************************************************************/
 
 /* Connects to the server's TCP socket listening at the specified address */
 static int connect_to_server(char *ip_addr, uint16_t port) {
@@ -177,12 +183,10 @@ static ACKPacket_t *build_ACK_packet(bool isNack) {
 }
 
 /************************************************************************************/
-/* Worker thread functions                                                          */
+/* Worker functions                                                                 */
 /************************************************************************************/
 
-/*
- * UDP thread: Read blocks of data from the UDP socket and write them to the file.
- */
+/* UDP thread: Read blocks of data from the UDP socket and write them to the file. */
 static void *udp_listener_worker(void *arg) {
 	ssize_t read_len;
 
@@ -196,68 +200,124 @@ static void *udp_listener_worker(void *arg) {
 	printf("\nUDP Listener starting:\n");
 
 	/* Read blocks and write them to the file */
-	while (!all_recv) {
-		size_t pkt_recvcount = 0;
+	while (!file_complete) {
+		// printf("value of round over is %d\n", round_over);
 		/* Read blocks until the done recv is received */
-		while(!done_recv) {
-			read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
-			if (read_len == -1) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK) {
-					continue;
-				} else {
-					/* an error occurred, abort */
-					perror("recvfrom");
-					((struct udp_worker_arg*)arg)->error_code = errno;
-					return NULL;
+		if (!round_over) {
+			size_t pkt_recvcount = 0;
+			while(!complete_recv) {
+				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
+				if (read_len == -1) {
+					if (errno == EAGAIN || errno == EWOULDBLOCK) {
+						continue;
+					} else {
+						/* an error occurred, abort */
+						perror("recvfrom");
+						((struct udp_worker_arg*)arg)->error_code = errno;
+						return NULL;
+					}
 				}
+
+				pkt_recvcount += 1;
+
+				/* Move file to correct position */
+				uint32_t idx = ntohl(f_block->index);
+				set_block_status(idx);
+				lseek(file_fd, idx * block_len, SEEK_SET);
+
+				/* Write the block into the file */
+				write(file_fd, f_block->data_stream, read_len - sizeof(FileBlockPacket_t));
 			}
 
-			pkt_recvcount += 1;
-
-			/* Move file to correct position */
-			uint32_t idx = ntohl(f_block->index);
-			set_block_status(idx);
-			lseek(file_fd, idx * block_len, SEEK_SET);
-
-			/* Write the block into the file */
-			write(file_fd, f_block->data_stream, read_len - sizeof(FileBlockPacket_t));
-		}
-
-		/* COMPLETE packet was received, read blocks until the internal buffer is empty */
-		while(1) {
-			read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
-			if (read_len == -1) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK) {
-					break;
-				} else {
-					perror("recvfrom");
-					((struct udp_worker_arg*)arg)->error_code = errno;
-					return NULL;
+			/* COMPLETE packet was received, read blocks until the internal buffer is empty */
+			while(1) {
+				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
+				if (read_len == -1) {
+					if (errno == EAGAIN || errno == EWOULDBLOCK) {
+						break;
+					} else {
+						perror("recvfrom");
+						((struct udp_worker_arg*)arg)->error_code = errno;
+						return NULL;
+					}
 				}
+
+				pkt_recvcount += 1;
+
+				/* Move file to correct position */
+				uint32_t idx = ntohl(f_block->index);
+				set_block_status(idx);
+				lseek(file_fd, idx * block_len, SEEK_SET);
+
+				/* Write the block into the file */
+				write(file_fd, f_block->data_stream, read_len - sizeof(FileBlockPacket_t));
 			}
+			round_over = true; /* Mark indicator for round completion */
 
-			pkt_recvcount += 1;
-
-			/* Move file to correct position */
-			uint32_t idx = ntohl(f_block->index);
-			set_block_status(idx);
-			lseek(file_fd, idx * block_len, SEEK_SET);
-
-			/* Write the block into the file */
-			write(file_fd, f_block->data_stream, read_len - sizeof(FileBlockPacket_t));
-		}
-
-		/* just assume everything was received */
-		printf("Blocks received this round: %zu\n", pkt_recvcount);
-
-		ACKPacket_t *pkt = build_ACK_packet(false);
-		printf("pkt address = %p\n", pkt);
-
-		all_recv = true;
+			/* just assume everything was received */
+			printf("Blocks received this round: %zu\n", pkt_recvcount);
+		}/* else {
+			sched_yield();
+		}*/
 	}
+
+	printf("file_complete");
 
 	((struct udp_worker_arg*)arg)->error_code = 0;
 	return NULL;
+}
+
+/* TCP thread: Listen for and transmit control packets */
+static void tcp_worker(int sock_fd, bool isNack) {
+	ssize_t recv_len;
+	CompletePacket_t received_complete;
+	ACKPacket_t *ack_pkt = NULL;
+
+	while (!file_complete) {
+		/* Receive the COMPLETE message */
+		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_DONTWAIT); // FIXME: error check
+		if (recv_len == -1) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				continue;
+			} else { //TODO: better error checking
+				perror("recv");
+				file_complete = true;
+				return;
+			}
+		}
+		if (received_complete.type == COMPLETE) {
+			complete_recv = true;
+		}
+
+		/* Wait for the UDP transmissions to stop */
+		while (!round_over) {
+			sched_yield(); // Allow the UDP thread to work
+		}
+
+		/* Build the ACK packet */
+		ack_pkt = build_ACK_packet(isNack);
+		if (ack_pkt == NULL) { /* Transmission complete if NULL */
+			/* Send the COMPLETE message */
+			send(sock_fd, &done, sizeof(done), 0);
+			file_complete = true;
+			return;
+		} else {
+			/* Transmission continues */
+			/* Send the ack packet */
+			size_t len = sizeof(ACKPacket_t) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
+			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
+			if (err == -1) {
+				perror("send");
+				file_complete = true;
+				return;
+			}
+			if (isNack) { /* Free if using a NACK packet */
+				free(ack_pkt);
+			}
+			round_over = false;
+
+		}
+	}
 }
 
 /* SACK AND NACK SHOULD BE A COMMAND LINE ARGUMENT */
@@ -265,7 +325,6 @@ int main() {
 	/* Packets */
 	FileInformationPacket_t f_info;
 	UDPInformationPacket_t udp_info;
-	CompletePacket_t received_complete;
 
 	struct udp_worker_arg udp_arg;
 
@@ -291,8 +350,8 @@ int main() {
 		return errno;
 	}
 
-	// FIXME: error check this
-	recv(tcp_sock, &f_info, sizeof(f_info), 0);
+	/* Receive the file size from the server */
+	recv(tcp_sock, &f_info, sizeof(f_info), 0); // FIXME: error check this
 
 	udp_arg.block_packet_len = ntohs(f_info.blocksize) + 1 + sizeof(FileBlockPacket_t);
 
@@ -326,11 +385,8 @@ int main() {
 	/* Send the UDP Info to the server */
 	send(tcp_sock, &udp_info, sizeof(udp_info), 0);
 
-	/* Receive the COMPLETE message */
-	recv(tcp_sock, &received_complete, sizeof(received_complete), 0);
-	if (received_complete.type == COMPLETE) {
-		done_recv = true;
-	}
+	/* Begin TCP thread loop */
+	tcp_worker(tcp_sock, false);
 
 	pthread_join(udp_tid, NULL);
 
