@@ -28,7 +28,7 @@
 #define CLI_UDP_A   "0.0.0.0"
 #define CLI_UDP_P   0
 
-/* These are extraneous... */
+/* These are not used... */
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
 
@@ -150,7 +150,7 @@ static inline void set_block_status(uint32_t idx) {
 static inline bool get_block_status(uint32_t idx) {
 	/* idx / 32 gives word position */
 	/* idx % 32 gives bit position */
-	return (sack_packet->ack_stream[idx / 32] & (1 << idx % 32) != 0);
+	return ((sack_packet->ack_stream[idx / 32] & (1 << idx % 32)) != 0);
 }
 
 /* Finds the number of blocks missing */
@@ -180,7 +180,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack) {
 	if (ack_stream_len) { /* This is nonzero if packets were missed */
 		if (isNack) {
 			/* Construct the NACK packet to be sent to the server */
-			pkt = calloc(1, sizeof(ACKPacket_t) + ack_stream_len * sizeof(uint32_t));
+			pkt = malloc(sizeof(ACKPacket_t) + ack_stream_len * sizeof(uint32_t));
 			if (pkt == NULL) {
 				errno = ENOMEM;
 				return NULL;
@@ -209,7 +209,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack) {
 			}
 		} else {
 			/* SACK packet just returns the entire bitmap */
-			return sack_packet;
+			pkt = sack_packet;
 		}
 	}
 
@@ -221,7 +221,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack) {
 /************************************************************************************/
 
 /* UDP thread: Read blocks of data from the UDP socket and write them to the file. */
-static void *udp_listener_worker(void *arg) {
+static void *udp_worker(void *arg) {
 	ssize_t read_len;
 
 	/* Extract the values from the argument */
@@ -354,7 +354,7 @@ static void tcp_worker(int sock_fd, bool isNack) {
 	}
 }
 
-/* SACK AND NACK SHOULD BE A COMMAND LINE ARGUMENT */
+/* SACK/NACK SHOULD BE A COMMAND LINE ARGUMENT */
 int main() {
 	/* Packets */
 	FileInformationPacket_t f_info;
@@ -409,7 +409,7 @@ int main() {
 	printf("Number of blocks in file: %zu\n", num_blocks_total);
 
 	/* Spawn the UDP thread */
-	err = pthread_create(&udp_tid, NULL, udp_listener_worker, &udp_arg);
+	err = pthread_create(&udp_tid, NULL, udp_worker, &udp_arg);
 	if (err) {
 		errno = err;
 		perror("pthread_create");

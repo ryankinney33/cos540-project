@@ -23,13 +23,22 @@
 #define SRV_TCP_A   "0.0.0.0"
 #define SRV_TCP_P   27020
 
-/* These are extraneous... */
-#define CLI_UDP_P   25567
+/* These are not used... */
+#define CLI_UDP_P   27019
 #define CLI_UDP_A   "127.0.0.1"
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
 
-/* Global constant data */
+struct udp_worker_arg {
+	FileBlockPacket_t *f_block;
+	int file_fd;
+	int socket_fd;
+	int error_code;
+	uint16_t block_packet_len;
+};
+
+
+/* Global data */
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 
 /*
@@ -128,6 +137,13 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	return pkt;
 }
 
+static void *udp_worker(void *arg) {
+
+	
+
+	return NULL;
+}
+
 int main() {
 	/* file descriptors */
 	int serv_tcp_fd;
@@ -183,15 +199,21 @@ int main() {
 	/* Write the UDP port the client is using into the address structure */
 	client_addr.sin_port = udp_info.destination_port;
 
+	/* Connect, so we can use send() instead of sendto() */
+	if (connect(client_udp_fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
+		perror("connect");
+		return errno; /* TODO: cleanup */
+	}
+
 	FileBlockPacket_t *block = malloc(sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1);
 	block->index = 0;
 	ssize_t tmp;
 	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize) + 1);
 	block->index = htonl(0);
-	sendto(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+	send(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0);
 	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize) + 1);
 	block->index = htonl(1);
-	sendto(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0, (struct sockaddr *)&client_addr, sizeof(client_addr));
+	send(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0);
 
 	/* Send the complete packet */
 	send(client_tcp_fd, &done, sizeof(done), 0);
