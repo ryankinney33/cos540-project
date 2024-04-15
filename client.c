@@ -19,6 +19,7 @@
 #include <pthread.h>
 #include <sched.h>
 
+/* Protocol */
 #include "packets.h"
 
 /* Ideally, these would be set by the Makefile... */
@@ -146,6 +147,12 @@ static inline void set_block_status(uint32_t idx) {
 	sack_packet->ack_stream[idx / 32] |=  1 << (idx % 32);
 }
 
+static inline bool get_block_status(uint32_t idx) {
+	/* idx / 32 gives word position */
+	/* idx % 32 gives bit position */
+	return (sack_packet->ack_stream[idx / 32] & (1 << idx % 32) != 0);
+}
+
 /* Finds the number of blocks missing */
 static size_t get_num_missing(void) {
 	size_t count = 0; /* Counts the number of blocks received */
@@ -160,7 +167,8 @@ static size_t get_num_missing(void) {
 
 /*
  * Scans the block_status buffer and builds an ACK packet.
- * Returns NULL if all blocks were received.
+ * Returns NULL if all blocks were received or on error.
+ * If error, errno will be set to the source of error
  */
 static ACKPacket_t *build_ACK_packet(bool isNack) {
 	ACKPacket_t *pkt = NULL;
@@ -171,8 +179,34 @@ static ACKPacket_t *build_ACK_packet(bool isNack) {
 
 	if (ack_stream_len) { /* This is nonzero if packets were missed */
 		if (isNack) {
-			/* TODO: FIX THIS!!!! */
-			return NULL;
+			/* Construct the NACK packet to be sent to the server */
+			pkt = calloc(1, sizeof(ACKPacket_t) + ack_stream_len * sizeof(uint32_t));
+			if (pkt == NULL) {
+				errno = ENOMEM;
+				return NULL;
+			}
+
+			/* Create preamble */
+			pkt->header.head[0] = 'P';
+			pkt->header.head[1] = 'D';
+			pkt->header.head[0] = 'P';
+			pkt->header.type = NACK;
+
+			/* Set the length */
+			pkt->length = htonl(ack_stream_len - 1);
+
+			/* Iterate through the SACK to fill NACK */
+			uint32_t sack_idx = 0, pkt_idx = 0;
+			while (pkt_idx < ack_stream_len && sack_idx < num_blocks_total) {
+				if (sack_packet->ack_stream[sack_idx / 32] == UINT32_MAX) {
+					sack_idx += 32; /* Move to next word*/
+				} else {
+					if (!get_block_status(sack_idx)) { /* Is the block missing? */
+						pkt->ack_stream[pkt_idx++] = htonl(sack_idx);
+					}
+					sack_idx += 1;
+				}
+			}
 		} else {
 			/* SACK packet just returns the entire bitmap */
 			return sack_packet;
