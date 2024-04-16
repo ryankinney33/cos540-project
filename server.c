@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdbool.h>
 
 /* Sockets */
 #include <sys/socket.h>
@@ -40,6 +41,7 @@ struct udp_worker_arg {
 
 /* Global data */
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
+volatile bool round_over = false;
 
 /*
  * Opens a TCP socket.
@@ -138,8 +140,46 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 }
 
 static void *udp_worker(void *arg) {
+	ssize_t num_read, num_sent;
+	uint32_t block_idx = 0;
+	size_t num_blocks_sent = 0;
 
-	
+	/* Extract args */
+	int file_fd = ((struct udp_worker_arg*)arg)->file_fd;
+	int socket_fd = ((struct udp_worker_arg*)arg)->socket_fd;
+	FileBlockPacket_t *send_buf = ((struct udp_worker_arg*)arg)->f_block;
+	const uint16_t blocksize = ((struct udp_worker_arg*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
+
+	printf("UDP worker starting up...\n");
+
+	/* Round 1: send all blocks of the file from start to end */
+	do {
+		num_read = read(file_fd, send_buf->data_stream, blocksize);
+		if (num_read == -1) {
+			/* Error occurred! */
+			perror("read");
+			round_over = true;
+			return NULL;
+		} else if (num_read == 0) {
+			break; /* Nothing read, nothing to send */
+		}
+
+		/* Set block index then increment index */
+		send_buf->index = htonl(block_idx++);
+
+		/* Send to the client */
+		num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
+		if (num_sent == -1) {
+			perror("send");
+			round_over = true;
+			return NULL;
+		}
+		num_blocks_sent += 1;
+	} while (num_read == blocksize);
+
+	round_over = true;
+
+	printf("Number of blocks sent this round: %zu\n", num_blocks_sent);
 
 	return NULL;
 }
@@ -155,6 +195,8 @@ int main() {
 	struct sockaddr_in client_addr;
 
 	uint16_t blocksize = 4096;
+
+	pthread_t udp_tid;
 
 	/* Packets */
 	FileInformationPacket_t f_info;
@@ -205,15 +247,21 @@ int main() {
 		return errno; /* TODO: cleanup */
 	}
 
-	FileBlockPacket_t *block = malloc(sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1);
-	block->index = 0;
-	ssize_t tmp;
-	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize) + 1);
-	block->index = htonl(0);
-	send(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0);
-	tmp = read(local_file_fd, block->data_stream, ntohs(f_info.blocksize) + 1);
-	block->index = htonl(1);
-	send(client_udp_fd, block, sizeof(FileBlockPacket_t) + tmp, 0);
+	uint16_t packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
+	FileBlockPacket_t *block = malloc(packet_len);
+
+	struct udp_worker_arg udp_arg = { .f_block=block, .file_fd=local_file_fd, .block_packet_len=packet_len, .socket_fd=client_udp_fd };
+	int err = pthread_create(&udp_tid, NULL, udp_worker, &udp_arg);
+	if (err == -1) {
+		perror("pthread_create");
+		return errno;
+	}
+
+	// while (!round_over) { /* Wait for the round to finish */
+	// 	sched_yield();
+	// }
+
+	pthread_join(udp_tid, NULL);
 
 	/* Send the complete packet */
 	send(client_tcp_fd, &done, sizeof(done), 0);
