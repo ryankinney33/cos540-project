@@ -30,22 +30,28 @@
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
 
+typedef enum TransmitStatus {
+	UDP_FINISHED = 1 << 0, /* Set when the UDP thread is done sending blocks */
+	CLIENT_DONE = 1 << 1, /* Set when the client has received all blocks */
+} TransmitStatus_t;
+
+struct thread_state {
+	TransmitStatus_t status;
+	ACKPacket_t *ack_packet;
+	pthread_mutex_t lock;
+};
+
 struct udp_worker_arg {
 	FileBlockPacket_t *f_block;
+	struct thread_state *state;
 	int file_fd;
 	int socket_fd;
 	int error_code;
 	uint16_t block_packet_len;
 };
 
-
 /* Global data */
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
-volatile bool round_over = false;
-volatile bool transmission_complete = false;
-
-ACKPacket_t *ack_packet = NULL;
-pthread_mutex_t ack_packet_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
  * Opens a TCP socket.
@@ -157,23 +163,22 @@ static void *udp_worker(void *arg) {
 	int socket_fd = ((struct udp_worker_arg*)arg)->socket_fd;
 	FileBlockPacket_t *send_buf = ((struct udp_worker_arg*)arg)->f_block;
 	const uint16_t blocksize = ((struct udp_worker_arg*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
+	struct thread_state *state = ((struct udp_worker_arg*)arg)->state;
 
 	printf("\nUDP worker starting up...\n");
 
-	while (!transmission_complete) {
+	while (!(state->status & CLIENT_DONE)) {
 		num_blocks_sent = 0;
 
 		/* Acquire the lock on the ack_packet */
-		pthread_mutex_lock(&ack_packet_lock);
+		pthread_mutex_lock(&state->lock);
 		do {
 			/* Set to the correct position */
-			if (ack_packet != NULL) { /* Only first round has non-NULL ack_packet */
+			if (state->ack_packet != NULL) { /* Only first round has non-NULL ack_packet */
 				/* TODO: scan ACK_PACKET to get next idx */
 				num_blocks_sent = num_blocks_sent;
 
 				lseek(file_fd, blocksize * block_idx, SEEK_SET);
-			} else {
-				block_idx += 1;
 			}
 
 			/* This automatically handles the size of the final block */
@@ -181,7 +186,7 @@ static void *udp_worker(void *arg) {
 			if (num_read == -1) {
 				/* Error occurred! */
 				perror("udp: read");
-				round_over = true;
+				state->status |= UDP_FINISHED;
 				return NULL;
 			} else if (num_read == 0) {
 				break; /* Nothing read, nothing to send */
@@ -194,25 +199,30 @@ static void *udp_worker(void *arg) {
 			num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
 			if (num_sent == -1) {
 				perror("send");
-				round_over = true;
+				state->status |= UDP_FINISHED;
 				return NULL;
 			}
 			num_blocks_sent += 1;
+			block_idx += 1;
 
 		} while (num_read == blocksize);
 
 		printf("Number of blocks sent this round: %zu\n", num_blocks_sent);
 
 		/* Signal to TCP thread we are done*/
-		pthread_mutex_unlock(&ack_packet_lock);
-		round_over = true;
+		state->status |= UDP_FINISHED;
+		pthread_mutex_unlock(&state->lock);
 
+		/* Wait for the TCP thread to finish */
+		while (state->status & UDP_FINISHED) {
+			sched_yield();
+		}
 	}
 
 	return NULL;
 }
 
-void tcp_worker(int sock_fd) {
+void tcp_worker(int sock_fd, struct thread_state *state) {
 	ssize_t len;
 	ControlHeader_t ctrl;
 	uint32_t ack_stream_length = 0;
@@ -220,12 +230,12 @@ void tcp_worker(int sock_fd) {
 
 	while(1) {
 		/* Wait for the UDP thread to finish */
-		while (!round_over) {
+		while (!(state->status & UDP_FINISHED)) {
 			sched_yield();
 		}
-		pthread_mutex_lock(&ack_packet_lock);
+		pthread_mutex_lock(&state->lock);
 
-		free(ack_packet); /* Done with the ACK, free it */
+		free(state->ack_packet); /* Done with the ACK, free it */
 
 		/* Send the Complete packet */
 		len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
@@ -240,31 +250,38 @@ void tcp_worker(int sock_fd) {
 		if (ctrl.type == COMPLETE) {
 			/* We are done, cleanup */
 			printf("The client has received all blocks. Cleaning up...\n");
-			transmission_complete = true;
-			round_over = false; /* Signal to client to move on */
+			state->status = CLIENT_DONE; /* Signal to UDP thread to finish up */
 			break;
 		} else if (ctrl.type != SACK && ctrl.type != NACK) {
 			/* something went wrong */
 			printf("The client sent an unexpected header. Aborting.\n");
-			transmission_complete = true;
+			state->status = CLIENT_DONE;
 			break;
 		}
 
 		/* Get the length of the ack stream */
 		len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
+		ack_stream_length = ntohl(ack_stream_length);
 
 		/* Allocate and copy information into the ACK packet */
-		ack_pkt_len = (ntohl(ack_stream_length) + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
-		ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
-		ack_packet->header = ctrl;
-		ack_packet->length = ack_stream_length;
+		ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
+		state->ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
+		state->ack_packet->header = ctrl;
+		state->ack_packet->length = ack_stream_length;
 
 		/* Receive the ACK stream and write it to the ACK packet */
-		len = recv(sock_fd, ack_packet->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+		len = recv(sock_fd, state->ack_packet->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+
+		/* Convert the packet fields to host order (if NACK) */
+		if (state->ack_packet->header.type == NACK) {
+			for (size_t i = 0; i <= ack_stream_length; ++i) {
+				state->ack_packet->ack_stream[i] = ntohl(state->ack_packet->ack_stream[i]);
+			}
+		}
 
 		/* Signal to UDP thread to begin */
-		pthread_mutex_unlock(&ack_packet_lock);
-		round_over = false;
+		state->status &= ~UDP_FINISHED;
+		pthread_mutex_unlock(&state->lock);
 	}
 }
 
@@ -275,16 +292,19 @@ int main() {
 	int client_udp_fd;
 	int local_file_fd;
 
-	/* address */
-	struct sockaddr_in client_addr;
-
-	uint16_t blocksize = 50;
-
-	pthread_t udp_tid;
-
 	/* Packets */
 	FileInformationPacket_t f_info;
 	UDPInformationPacket_t udp_info;
+	FileBlockPacket_t *block;
+
+	/* address */
+	struct sockaddr_in client_addr;
+
+	/* Thread state */
+	uint16_t blocksize = 50, packet_len;
+	pthread_t udp_tid;
+	struct udp_worker_arg udp_arg;
+	struct thread_state state = {.status=0, .ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 
 	/* Open the file being transferred and build file info packet */
 	local_file_fd = open("RFC.txt", O_RDONLY); //FIXME: error check this
@@ -331,17 +351,23 @@ int main() {
 		return errno; /* TODO: cleanup */
 	}
 
-	uint16_t packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
-	FileBlockPacket_t *block = malloc(packet_len);
+	packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
+	block = malloc(packet_len);
 
-	struct udp_worker_arg udp_arg = { .f_block=block, .file_fd=local_file_fd, .block_packet_len=packet_len, .socket_fd=client_udp_fd };
+	udp_arg.f_block = block;
+	udp_arg.state = &state;
+	udp_arg.file_fd = local_file_fd;
+	udp_arg.socket_fd = client_udp_fd;
+	udp_arg.error_code = 0;
+	udp_arg.block_packet_len = packet_len;
+
 	int err = pthread_create(&udp_tid, NULL, udp_worker, &udp_arg);
 	if (err == -1) {
 		perror("pthread_create");
 		return errno;
 	}
 
-	tcp_worker(client_tcp_fd);
+	tcp_worker(client_tcp_fd, &state);
 
 	// pthread_join(udp_tid, NULL); /* Wait for the UDP thread to exit */
 
