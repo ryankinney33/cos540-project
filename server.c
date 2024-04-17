@@ -44,6 +44,9 @@ static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 volatile bool round_over = false;
 volatile bool transmission_complete = false;
 
+ACKPacket_t *ack_packet = NULL;
+pthread_mutex_t ack_packet_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /*
  * Opens a TCP socket.
  * Returns the file descriptor for the socket.
@@ -157,41 +160,53 @@ static void *udp_worker(void *arg) {
 
 	printf("\nUDP worker starting up...\n");
 
-	/* Round 1: send all blocks of the file from start to end */
-	do {
-		num_read = read(file_fd, send_buf->data_stream, blocksize);
-		if (num_read == -1) {
-			/* Error occurred! */
-			perror("read");
-			round_over = true;
-			return NULL;
-		} else if (num_read == 0) {
-			break; /* Nothing read, nothing to send */
-		}
+	while (!transmission_complete) {
+		num_blocks_sent = 0;
 
-		/* Set block index then increment index */
-		send_buf->index = htonl(block_idx++);
+		/* Acquire the lock on the ack_packet */
+		pthread_mutex_lock(&ack_packet_lock);
+		do {
+			/* Set to the correct position */
+			if (ack_packet != NULL) { /* Only first round has non-NULL ack_packet */
+				/* TODO: scan ACK_PACKET to get next idx */
+				num_blocks_sent = num_blocks_sent;
 
-		/* Send to the client */
-		num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
-		if (num_sent == -1) {
-			perror("send");
-			round_over = true;
-			return NULL;
-		}
-		num_blocks_sent += 1;
+				lseek(file_fd, blocksize * block_idx, SEEK_SET);
+			} else {
+				block_idx += 1;
+			}
 
-		// if (num_blocks_sent >= 150) break;
-	} while (num_read == blocksize);
+			/* This automatically handles the size of the final block */
+			num_read = read(file_fd, send_buf->data_stream, blocksize);
+			if (num_read == -1) {
+				/* Error occurred! */
+				perror("udp: read");
+				round_over = true;
+				return NULL;
+			} else if (num_read == 0) {
+				break; /* Nothing read, nothing to send */
+			}
 
-	round_over = true;
+			/* Set block index */
+			send_buf->index = htonl(block_idx);
 
-	printf("Number of blocks sent this round: %zu\n", num_blocks_sent);
+			/* Send to the client */
+			num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
+			if (num_sent == -1) {
+				perror("send");
+				round_over = true;
+				return NULL;
+			}
+			num_blocks_sent += 1;
 
-	num_blocks_sent = 0;
+		} while (num_read == blocksize);
 
-	while(!transmission_complete) {
-		sched_yield();
+		printf("Number of blocks sent this round: %zu\n", num_blocks_sent);
+
+		/* Signal to TCP thread we are done*/
+		pthread_mutex_unlock(&ack_packet_lock);
+		round_over = true;
+
 	}
 
 	return NULL;
@@ -200,7 +215,6 @@ static void *udp_worker(void *arg) {
 void tcp_worker(int sock_fd) {
 	ssize_t len;
 	ControlHeader_t ctrl;
-	ACKPacket_t *ack = NULL;
 	uint32_t ack_stream_length = 0;
 	size_t ack_pkt_len = 0;
 
@@ -209,11 +223,16 @@ void tcp_worker(int sock_fd) {
 		while (!round_over) {
 			sched_yield();
 		}
+		pthread_mutex_lock(&ack_packet_lock);
 
-		free(ack); /* Done with the ACK, free it */
+		free(ack_packet); /* Done with the ACK, free it */
 
 		/* Send the Complete packet */
 		len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
+		if (len == -1) {
+			perror("tcp: send");
+			return;
+		}
 
 		/* Receive the control header */
 		len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
@@ -222,6 +241,7 @@ void tcp_worker(int sock_fd) {
 			/* We are done, cleanup */
 			printf("The client has received all blocks. Cleaning up...\n");
 			transmission_complete = true;
+			round_over = false; /* Signal to client to move on */
 			break;
 		} else if (ctrl.type != SACK && ctrl.type != NACK) {
 			/* something went wrong */
@@ -235,14 +255,16 @@ void tcp_worker(int sock_fd) {
 
 		/* Allocate and copy information into the ACK packet */
 		ack_pkt_len = (ntohl(ack_stream_length) + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
-		ack = malloc(ack_pkt_len); /* FIXME: error check this */
-		ack->header = ctrl;
-		ack->length = ack_stream_length;
+		ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
+		ack_packet->header = ctrl;
+		ack_packet->length = ack_stream_length;
 
 		/* Receive the ACK stream and write it to the ACK packet */
-		len = recv(sock_fd, ack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+		len = recv(sock_fd, ack_packet->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
 
-		round_over = false; /* The next round begins */
+		/* Signal to UDP thread to begin */
+		pthread_mutex_unlock(&ack_packet_lock);
+		round_over = false;
 	}
 }
 
@@ -321,7 +343,7 @@ int main() {
 
 	tcp_worker(client_tcp_fd);
 
-	pthread_join(udp_tid, NULL); /* Wait for the UDP thread to exit */
+	// pthread_join(udp_tid, NULL); /* Wait for the UDP thread to exit */
 
 	close(client_tcp_fd);
 	close(client_udp_fd);

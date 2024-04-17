@@ -98,7 +98,7 @@ static int get_udp_listener(char *ip_addr, uint16_t port) {
 	int fd, err;
 	struct sockaddr_in address;
 
-	/* Open the UDP socket */
+	/* Open the UDP socket (nonblocking) */
 	fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
 	if (fd == -1) {
 		perror("socket");
@@ -290,12 +290,10 @@ static void *udp_worker(void *arg) {
 
 			/* just assume everything was received */
 			printf("Blocks received this round: %zu\n", pkt_recvcount);
-		}/* else {
+		} else {
 			sched_yield();
-		}*/
+		}
 	}
-
-	printf("file_complete");
 
 	((struct udp_worker_arg*)arg)->error_code = 0;
 	return NULL;
@@ -334,6 +332,7 @@ static void tcp_worker(int sock_fd, bool isNack) {
 			/* Send the COMPLETE message */
 			send(sock_fd, &done, sizeof(done), 0);
 			file_complete = true;
+			printf("All blocks received. Cleaning up...\n");
 			return;
 		} else {
 			/* Transmission continues */
