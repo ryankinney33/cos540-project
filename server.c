@@ -167,11 +167,11 @@ static void *udp_worker(void *arg) {
 
 	printf("\nUDP worker starting up...\n");
 
+	/* Acquire the lock */
+	pthread_mutex_lock(&state->lock);
+
 	while (!(state->status & CLIENT_DONE)) {
 		num_blocks_sent = 0;
-
-		/* Acquire the lock on the ack_packet */
-		pthread_mutex_lock(&state->lock);
 		do {
 			/* Set to the correct position */
 			if (state->ack_packet != NULL) { /* Only first round has non-NULL ack_packet */
@@ -212,10 +212,17 @@ static void *udp_worker(void *arg) {
 		/* Signal to TCP thread we are done*/
 		state->status |= UDP_FINISHED;
 		pthread_mutex_unlock(&state->lock);
+		sched_yield(); /* Allow TCP thread to execute */
 
-		/* Wait for the TCP thread to finish */
-		while (state->status & UDP_FINISHED) {
-			sched_yield();
+		/* Wait for TCP thread to finish */
+		while(1) {
+			pthread_mutex_lock(&state->lock); /* Will keep the lock until next transmission is over */
+			if (state->status & UDP_FINISHED) {
+				pthread_mutex_unlock(&state->lock);
+				sched_yield();
+			} else {
+				break;
+			}
 		}
 	}
 
@@ -229,60 +236,61 @@ void tcp_worker(int sock_fd, struct thread_state *state) {
 	size_t ack_pkt_len = 0;
 
 	while(1) {
-		/* Wait for the UDP thread to finish */
-		while (!(state->status & UDP_FINISHED)) {
-			sched_yield();
-		}
+		/* Check the state */
 		pthread_mutex_lock(&state->lock);
+		if (state->status & UDP_FINISHED) { /* Check if UDP thread is finished */
+			free(state->ack_packet); /* Done with the ACK, free it */
 
-		free(state->ack_packet); /* Done with the ACK, free it */
-
-		/* Send the Complete packet */
-		len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
-		if (len == -1) {
-			perror("tcp: send");
-			return;
-		}
-
-		/* Receive the control header */
-		len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
-
-		if (ctrl.type == COMPLETE) {
-			/* We are done, cleanup */
-			printf("The client has received all blocks. Cleaning up...\n");
-			state->status = CLIENT_DONE; /* Signal to UDP thread to finish up */
-			break;
-		} else if (ctrl.type != SACK && ctrl.type != NACK) {
-			/* something went wrong */
-			printf("The client sent an unexpected header. Aborting.\n");
-			state->status = CLIENT_DONE;
-			break;
-		}
-
-		/* Get the length of the ack stream */
-		len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
-		ack_stream_length = ntohl(ack_stream_length);
-
-		/* Allocate and copy information into the ACK packet */
-		ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
-		state->ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
-		state->ack_packet->header = ctrl;
-		state->ack_packet->length = ack_stream_length;
-
-		/* Receive the ACK stream and write it to the ACK packet */
-		len = recv(sock_fd, state->ack_packet->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
-
-		/* Convert the packet fields to host order (if NACK) */
-		if (state->ack_packet->header.type == NACK) {
-			for (size_t i = 0; i <= ack_stream_length; ++i) {
-				state->ack_packet->ack_stream[i] = ntohl(state->ack_packet->ack_stream[i]);
+			/* Send the Complete packet */
+			len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
+			if (len == -1) {
+				perror("tcp: send");
+				break;
 			}
-		}
 
-		/* Signal to UDP thread to begin */
-		state->status &= ~UDP_FINISHED;
+			/* Receive the control header */
+			len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
+
+			if (ctrl.type == COMPLETE) {
+				/* We are done, cleanup */
+				printf("The client has received all blocks. Cleaning up...\n");
+				break;
+			} else if (ctrl.type != SACK && ctrl.type != NACK) {
+				/* something went wrong */
+				printf("The client sent an unexpected header. Aborting.\n");
+				break;
+			}
+
+			/* Get the length of the ack stream */
+			len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
+			ack_stream_length = ntohl(ack_stream_length);
+
+			/* Allocate and copy information into the ACK packet */
+			ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
+			state->ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
+			state->ack_packet->header = ctrl;
+			state->ack_packet->length = ack_stream_length;
+
+			/* Receive the ACK stream and write it to the ACK packet */
+			len = recv(sock_fd, state->ack_packet->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+
+			/* Convert the packet fields to host order (if NACK) */
+			if (state->ack_packet->header.type == NACK) {
+				for (size_t i = 0; i <= ack_stream_length; ++i) {
+					state->ack_packet->ack_stream[i] = ntohl(state->ack_packet->ack_stream[i]);
+				}
+			}
+
+			/* Signal to UDP thread to begin */
+			state->status &= ~UDP_FINISHED;
+		}
 		pthread_mutex_unlock(&state->lock);
+		sched_yield(); /* Let the UDP thread execute */
 	}
+
+	/* We are done, tell UDP to finish up and exit */
+	state->status = CLIENT_DONE;
+	pthread_mutex_unlock(&state->lock);
 }
 
 int main() {
