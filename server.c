@@ -42,6 +42,7 @@ struct udp_worker_arg {
 /* Global data */
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 volatile bool round_over = false;
+volatile bool transmission_complete = false;
 
 /*
  * Opens a TCP socket.
@@ -139,6 +140,10 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	return pkt;
 }
 
+/************************************************************************************/
+/* Worker functions                                                                 */
+/************************************************************************************/
+
 static void *udp_worker(void *arg) {
 	ssize_t num_read, num_sent;
 	uint32_t block_idx = 0;
@@ -150,7 +155,7 @@ static void *udp_worker(void *arg) {
 	FileBlockPacket_t *send_buf = ((struct udp_worker_arg*)arg)->f_block;
 	const uint16_t blocksize = ((struct udp_worker_arg*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
 
-	printf("UDP worker starting up...\n");
+	printf("\nUDP worker starting up...\n");
 
 	/* Round 1: send all blocks of the file from start to end */
 	do {
@@ -175,13 +180,70 @@ static void *udp_worker(void *arg) {
 			return NULL;
 		}
 		num_blocks_sent += 1;
+
+		// if (num_blocks_sent >= 150) break;
 	} while (num_read == blocksize);
 
 	round_over = true;
 
 	printf("Number of blocks sent this round: %zu\n", num_blocks_sent);
 
+	num_blocks_sent = 0;
+
+	while(!transmission_complete) {
+		sched_yield();
+	}
+
 	return NULL;
+}
+
+void tcp_worker(int sock_fd) {
+	ssize_t len;
+	ControlHeader_t ctrl;
+	ACKPacket_t *ack = NULL;
+	uint32_t ack_stream_length = 0;
+	size_t ack_pkt_len = 0;
+
+	while(1) {
+		/* Wait for the UDP thread to finish */
+		while (!round_over) {
+			sched_yield();
+		}
+
+		free(ack); /* Done with the ACK, free it */
+
+		/* Send the Complete packet */
+		len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
+
+		/* Receive the control header */
+		len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
+
+		if (ctrl.type == COMPLETE) {
+			/* We are done, cleanup */
+			printf("The client has received all blocks. Cleaning up...\n");
+			transmission_complete = true;
+			break;
+		} else if (ctrl.type != SACK && ctrl.type != NACK) {
+			/* something went wrong */
+			printf("The client sent an unexpected header. Aborting.\n");
+			transmission_complete = true;
+			break;
+		}
+
+		/* Get the length of the ack stream */
+		len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
+
+		/* Allocate and copy information into the ACK packet */
+		ack_pkt_len = (ntohl(ack_stream_length) + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
+		ack = malloc(ack_pkt_len); /* FIXME: error check this */
+		ack->header = ctrl;
+		ack->length = ack_stream_length;
+
+		/* Receive the ACK stream and write it to the ACK packet */
+		len = recv(sock_fd, ack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+
+		round_over = false; /* The next round begins */
+	}
 }
 
 int main() {
@@ -194,7 +256,7 @@ int main() {
 	/* address */
 	struct sockaddr_in client_addr;
 
-	uint16_t blocksize = 4096;
+	uint16_t blocksize = 50;
 
 	pthread_t udp_tid;
 
@@ -257,17 +319,14 @@ int main() {
 		return errno;
 	}
 
-	// while (!round_over) { /* Wait for the round to finish */
-	// 	sched_yield();
-	// }
+	tcp_worker(client_tcp_fd);
 
-	pthread_join(udp_tid, NULL);
-
-	/* Send the complete packet */
-	send(client_tcp_fd, &done, sizeof(done), 0);
+	pthread_join(udp_tid, NULL); /* Wait for the UDP thread to exit */
 
 	close(client_tcp_fd);
+	close(client_udp_fd);
 	close(serv_tcp_fd);
+	close(local_file_fd);
 
 	return 0;
 }
