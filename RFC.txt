@@ -170,8 +170,23 @@ ACK Stream Length: 32 bits
 
 Ack Stream: variable
   In SACK mode, it is the bitmap representing which blocks the client
-  has received. In NACK mode, it is the list of block indexes that have
-  not been received by the client.
+  has received. It consists of a sequence of octets where each bit
+  represents the status of a block. A 1 represents the block
+  having been received. The octets are in the order from low index to
+  high index, with the most significant bit corresponding to an offset
+  of 7 from the octet index, and the least significant bit
+  corresponding to an offset of 0 from the octet index. An example is
+  shown below.
+
+    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |7|6|5|4|3|2|1|0|F|E|D|C|B|A|9|8|7|6|5|4|3|2|1|0|F|E|D|C|B|A|9|8|
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+                          SACK Bitmap Layout
+
+  In NACK mode, it is the list of block indexes that have
+  not been received by the client. The indexes are 32-bit numeric
+  quantities.
 
 3.1.5 Complete Packet
 ---------------------
