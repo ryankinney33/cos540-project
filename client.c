@@ -48,6 +48,8 @@ static volatile bool file_complete = false; /* All the blocks have been received
 static volatile bool round_over = false; /* All blocks in current round received */
 static volatile bool complete_recv = false; /* A "Complete" packet from server received */
 
+/* TODO: find a better way to do this than gross global state */
+
 /* Locks */
 // static pthread_mutex_t all_recv_lock = PTHREAD_MUTEX_INITIALIZER;
 // static pthread_mutex_t done_recv_lock = PTHREAD_MUTEX_INITIALIZER;

@@ -44,6 +44,7 @@ struct thread_state {
 struct udp_worker_arg {
 	FileBlockPacket_t *f_block;
 	struct thread_state *state;
+	size_t num_blocks;
 	int file_fd;
 	int socket_fd;
 	int error_code;
@@ -149,15 +150,37 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	return pkt;
 }
 
+/* Gets the flag for the block at idx */
+static inline bool get_block_status(uint32_t idx, uint32_t ack_stream[]) {
+	/* idx / 32 gives word position */
+	/* idx % 32 gives bit position */
+	return ((ack_stream[idx / 32] & (1 << idx % 32)) != 0);
+}
+
+/* Gets the next block index to send to client */
+static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t num_blocks) {
+	ssize_t next_index;
+
+	if (ack == NULL) { /* If NULL, round 1 is active, increment the index */
+		next_index = previous_index + 1;
+	} else if (ack->header.type == SACK) {
+		for (size_t i = previous_index; i < num_blocks; ++i) {
+			if (get_block_status(i, ack->ack_stream)) {
+				next_index = i;
+			}
+		}
+	} else {
+		/* TODO: implement NACK */
+	}
+
+	return next_index;
+}
+
 /************************************************************************************/
 /* Worker functions                                                                 */
 /************************************************************************************/
 
 static void *udp_worker(void *arg) {
-	ssize_t num_read, num_sent;
-	uint32_t block_idx = 0;
-	size_t num_blocks_sent = 0;
-
 	/* Extract args */
 	int file_fd = ((struct udp_worker_arg*)arg)->file_fd;
 	int socket_fd = ((struct udp_worker_arg*)arg)->socket_fd;
@@ -171,15 +194,13 @@ static void *udp_worker(void *arg) {
 	pthread_mutex_lock(&state->lock);
 
 	while (!(state->status & CLIENT_DONE)) {
-		num_blocks_sent = 0;
+		size_t num_blocks_sent = 0;
+		ssize_t num_read, num_sent, block_idx = -1;
 		do {
-			/* Set to the correct position */
-			if (state->ack_packet != NULL) { /* Only first round has non-NULL ack_packet */
-				/* TODO: scan ACK_PACKET to get next idx */
-				num_blocks_sent = num_blocks_sent;
-
+			/* Go to the next block index in the file */
+			block_idx = get_next_index(block_idx, state->ack_packet);
+			if (state->ack_packet != NULL)
 				lseek(file_fd, blocksize * block_idx, SEEK_SET);
-			}
 
 			/* This automatically handles the size of the final block */
 			num_read = read(file_fd, send_buf->data_stream, blocksize);
@@ -203,7 +224,6 @@ static void *udp_worker(void *arg) {
 				return NULL;
 			}
 			num_blocks_sent += 1;
-			block_idx += 1;
 
 		} while (num_read == blocksize);
 
@@ -364,6 +384,7 @@ int main() {
 
 	udp_arg.f_block = block;
 	udp_arg.state = &state;
+	udp_arg.num_blocks = ntohl(f_info.num_blocks) + 1;
 	udp_arg.file_fd = local_file_fd;
 	udp_arg.socket_fd = client_udp_fd;
 	udp_arg.error_code = 0;
