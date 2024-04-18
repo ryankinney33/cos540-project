@@ -151,29 +151,34 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 }
 
 /* Gets the flag for the block at idx */
-static inline bool get_block_status(uint32_t idx, uint32_t ack_stream[]) {
+static inline bool get_block_status(uint32_t idx, ACKPacket_t *pkt) {
 	/* idx / 32 gives word position */
 	/* idx % 32 gives bit position */
-	return ((ack_stream[idx / 32] & (1 << idx % 32)) != 0);
+	return ((pkt->ack_stream[idx / 32] & (1 << idx % 32)) != 0);
 }
 
-/* Gets the next block index to send to client */
-static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t num_blocks) {
-	ssize_t next_index;
-
+/*
+ * Gets the next block index to send to client.
+ * Returns -1 if there are no more blocks to send
+ */
+static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t num_blocks_total) {
 	if (ack == NULL) { /* If NULL, round 1 is active, increment the index */
-		next_index = previous_index + 1;
-	} else if (ack->header.type == SACK) {
-		for (size_t i = previous_index; i < num_blocks; ++i) {
-			if (get_block_status(i, ack->ack_stream)) {
-				next_index = i;
-			}
-		}
-	} else {
-		/* TODO: implement NACK */
+		return previous_index + 1; /* Don't need to check if final block, since that is handled elsewhere in this case */
 	}
 
-	return next_index;
+	if (ack->header.type == SACK) {
+		for (size_t i = previous_index + 1; i < num_blocks_total; ++i) {
+			if (!get_block_status(i, ack)) { /* TODO: Investigate skipping word if all bits set */
+				return i;
+			}
+		}
+	} else { /* NACK */
+		for (size_t i = 0; i <= ack->length; ++i) {
+			if (ack->ack_stream[i] > previous_index) /* TODO: maybe use a binary search instead of linear? */
+				return ack->ack_stream[i];
+		}
+	}
+	return -1; /* Nothing found, return done */
 }
 
 /************************************************************************************/
@@ -182,13 +187,15 @@ static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t n
 
 static void *udp_worker(void *arg) {
 	/* Extract args */
+	FileBlockPacket_t *send_buf = ((struct udp_worker_arg*)arg)->f_block;
+	struct thread_state *state = ((struct udp_worker_arg*)arg)->state;
+	const size_t num_blocks = ((struct udp_worker_arg*)arg)->num_blocks;
 	int file_fd = ((struct udp_worker_arg*)arg)->file_fd;
 	int socket_fd = ((struct udp_worker_arg*)arg)->socket_fd;
-	FileBlockPacket_t *send_buf = ((struct udp_worker_arg*)arg)->f_block;
 	const uint16_t blocksize = ((struct udp_worker_arg*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
-	struct thread_state *state = ((struct udp_worker_arg*)arg)->state;
+	int *error_code = &((struct udp_worker_arg*)arg)->error_code;
 
-	printf("\nUDP worker starting up...\n");
+	printf("UDP: Starting up...\n");
 
 	/* Acquire the lock */
 	pthread_mutex_lock(&state->lock);
@@ -198,7 +205,11 @@ static void *udp_worker(void *arg) {
 		ssize_t num_read, num_sent, block_idx = -1;
 		do {
 			/* Go to the next block index in the file */
-			block_idx = get_next_index(block_idx, state->ack_packet);
+			block_idx = get_next_index(block_idx, state->ack_packet, num_blocks);
+			if (block_idx == -1) {
+				break; /* Invalid index, we are done */
+			}
+
 			if (state->ack_packet != NULL)
 				lseek(file_fd, blocksize * block_idx, SEEK_SET);
 
@@ -206,8 +217,9 @@ static void *udp_worker(void *arg) {
 			num_read = read(file_fd, send_buf->data_stream, blocksize);
 			if (num_read == -1) {
 				/* Error occurred! */
-				perror("udp: read");
+				perror("UDP: read");
 				state->status |= UDP_FINISHED;
+				*error_code = errno;
 				return NULL;
 			} else if (num_read == 0) {
 				break; /* Nothing read, nothing to send */
@@ -219,15 +231,19 @@ static void *udp_worker(void *arg) {
 			/* Send to the client */
 			num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
 			if (num_sent == -1) {
-				perror("send");
+				perror("UDP: send");
 				state->status |= UDP_FINISHED;
 				return NULL;
 			}
 			num_blocks_sent += 1;
 
+			if (num_blocks_sent == 150) {
+				break;
+			}
+
 		} while (num_read == blocksize);
 
-		printf("Number of blocks sent this round: %zu\n", num_blocks_sent);
+		printf("UDP: Sent %zu blocks to client.\n", num_blocks_sent);
 
 		/* Signal to TCP thread we are done*/
 		state->status |= UDP_FINISHED;
@@ -246,6 +262,7 @@ static void *udp_worker(void *arg) {
 		}
 	}
 
+	*error_code = 0;
 	return NULL;
 }
 
@@ -254,6 +271,8 @@ void tcp_worker(int sock_fd, struct thread_state *state) {
 	ControlHeader_t ctrl;
 	uint32_t ack_stream_length = 0;
 	size_t ack_pkt_len = 0;
+
+	printf("TCP: Starting up...\n");
 
 	while(1) {
 		/* Check the state */
@@ -264,22 +283,26 @@ void tcp_worker(int sock_fd, struct thread_state *state) {
 			/* Send the Complete packet */
 			len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
 			if (len == -1) {
-				perror("tcp: send");
+				perror("TCP: send");
 				break;
 			}
 
 			/* Receive the control header */
 			len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
 
+			// printf("TCP: ctrl.type = %d\n", ctrl.type);
+
 			if (ctrl.type == COMPLETE) {
 				/* We are done, cleanup */
-				printf("The client has received all blocks. Cleaning up...\n");
+				printf("TCP: The client has received all blocks. Cleaning up...\n");
 				break;
 			} else if (ctrl.type != SACK && ctrl.type != NACK) {
 				/* something went wrong */
-				printf("The client sent an unexpected header. Aborting.\n");
+				printf("TCP: The client sent an unexpected packet. Aborting.\n");
 				break;
 			}
+
+			printf("TCP: Received a %s mode ACK packet from client. Beginning next round.\n", ctrl.type == SACK ? "Selective" : "Negative");
 
 			/* Get the length of the ack stream */
 			len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
@@ -288,6 +311,7 @@ void tcp_worker(int sock_fd, struct thread_state *state) {
 			/* Allocate and copy information into the ACK packet */
 			ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
 			state->ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
+
 			state->ack_packet->header = ctrl;
 			state->ack_packet->length = ack_stream_length;
 
@@ -368,7 +392,7 @@ int main() {
 	/* Receive the UDP information packet from the client */
 	recv(client_tcp_fd, &udp_info, sizeof(udp_info), 0);
 
-	printf("Client is listening on port %hu\n", ntohs(udp_info.destination_port));
+	printf("Client is listening on port %hu\n\n", ntohs(udp_info.destination_port));
 
 	/* Write the UDP port the client is using into the address structure */
 	client_addr.sin_port = udp_info.destination_port;
