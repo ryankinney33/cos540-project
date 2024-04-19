@@ -59,14 +59,14 @@ static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 /*******************************************************************************************/
 
 /* Connects to the server's TCP socket listening at the specified address */
-static int connect_to_server(char *ip_addr, uint16_t port) {
+int connect_to_server(const char *ip_addr, uint16_t port) {
 	int fd, err;
 	struct sockaddr_in address;
 
 	/* Open the TCP socket */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd == -1) {
-		perror("socket");
+		perror("TCP: socket");
 		return -1;
 	}
 
@@ -75,20 +75,20 @@ static int connect_to_server(char *ip_addr, uint16_t port) {
 	address.sin_port = htons(port);
 	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
 	if (err == 0) {
-		fprintf(stderr, "inet_pton: invalid IP address\n");
+		fprintf(stderr, "TCP: inet_pton: invalid IP address\n");
 		errno = EINVAL;
 		return -1;
 	} else if (err == -1) {
-		perror("inet_pton");
+		perror("TCP: inet_pton");
 		return -1;
 	}
 
-	printf("Connecting to %s:%hu\n", ip_addr, port);
+	printf("TCP: Connecting to %s:%hu\n", ip_addr, port);
 	if (connect(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		perror("connect");
+		perror("TCP: connect");
 		return -1;
 	}
-	printf("Connection successful.\n");
+	printf("TCP: Connection successful.\n");
 	return fd;
 }
 
@@ -96,14 +96,14 @@ static int connect_to_server(char *ip_addr, uint16_t port) {
  * Opens a UDP socket to receive data from the server.
  * Returns the file descriptor for the socket.
  */
-static int get_udp_listener(char *ip_addr, uint16_t port) {
+int get_udp_listener(const char *ip_addr, uint16_t port) {
 	int fd, err;
 	struct sockaddr_in address;
 
 	/* Open the UDP socket (nonblocking) */
 	fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
 	if (fd == -1) {
-		perror("socket");
+		perror("UDP: socket");
 		return -1;
 	}
 
@@ -115,16 +115,16 @@ static int get_udp_listener(char *ip_addr, uint16_t port) {
 	address.sin_port = htons(port);
 	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
 	if (err == 0) {
-		fprintf(stderr, "inet_pton: invalid IP address\n");
+		fprintf(stderr, "UDP: inet_pton: invalid IP address\n");
 		errno = EINVAL;
 		return -1;
 	} else if (err == -1) {
-		perror("inet_pton");
+		perror("UDP: inet_pton");
 		return -1;
 	}
 
 	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		perror("bind");
+		perror("UDP: bind");
 		return -1;
 	}
 
@@ -132,11 +132,11 @@ static int get_udp_listener(char *ip_addr, uint16_t port) {
 }
 
 /* Builds the UDP Information Packet to be sent to the server */
-static UDPInformationPacket_t build_udp_info(int socket_fd) {
+UDPInformationPacket_t build_udp_info(int socket_fd) {
 	struct sockaddr_in addr;
 
 	if (getsockname(socket_fd, (struct sockaddr *)&addr, &(socklen_t){sizeof(addr)}) == -1) {
-		perror("getsockname");
+		perror("UDP: getsockname");
 		exit(errno); /* A fatal error occurred */
 	}
 
@@ -159,7 +159,7 @@ static inline bool get_block_status(uint32_t idx, const ACKPacket_t *sack) {
 }
 
 /* Finds the number of blocks missing */
-static size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
+size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
 	size_t count = 0; /* Counts the number of blocks received */
 
 	/* Counts the number of set bits in the SACK */
@@ -175,7 +175,7 @@ static size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
  * Returns NULL if all blocks were received or on error.
  * If error, errno will be set to the source of error
  */
-static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_t num_blocks) {
+ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_t num_blocks) {
 	ACKPacket_t *pkt = NULL;
 	size_t ack_stream_len;
 
@@ -226,7 +226,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_
 /************************************************************************************/
 
 /* UDP thread: Read blocks of data from the UDP socket and write them to the file. */
-static void *udp_worker(void *arg) {
+void *udp_loop(void *arg) {
 	ssize_t read_len;
 
 	struct transmit_state *state = (struct transmit_state*)arg;
@@ -238,7 +238,7 @@ static void *udp_worker(void *arg) {
 	const uint16_t block_packet_len = state->block_packet_len;
 	const uint16_t block_len = block_packet_len - sizeof(FileBlockPacket_t);
 
-	printf("UDP: Starting up...\n");
+	printf("UDP: Ready to receive blocks.\n");
 
 	pthread_mutex_lock(&state->lock);
 	while (!(state->status & FILE_IS_COMPLETE)) {
@@ -284,14 +284,13 @@ static void *udp_worker(void *arg) {
 }
 
 /* TCP thread: Listen for and transmit control packets */
-static void tcp_worker(struct transmit_state *state, bool isNack) {
+void tcp_loop(struct transmit_state *state, bool use_nack) {
 	ssize_t recv_len;
 	CompletePacket_t received_complete;
 	ACKPacket_t *ack_pkt = NULL;
 
 	const int sock_fd = state->tcp_socket_fd;
 
-	printf("TCP: Starting up...\n");
 	while(1) {
 		/* Receive the Complete message from the server (nonblocking) */
 		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_DONTWAIT); /* FIXME: error check */
@@ -320,7 +319,7 @@ static void tcp_worker(struct transmit_state *state, bool isNack) {
 		} while (!(state->status & UDP_NO_MORE_BLOCKS));
 
 		/* Build the ACK packet */
-		ack_pkt = build_ACK_packet(isNack, state->sack, state->num_blocks);
+		ack_pkt = build_ACK_packet(use_nack, state->sack, state->num_blocks);
 		if (ack_pkt == NULL) { /* Check if the transmission is complete */
 			/* Send the complete message to the server */
 			send(sock_fd, &done, sizeof(done), 0);
@@ -329,7 +328,7 @@ static void tcp_worker(struct transmit_state *state, bool isNack) {
 			printf("TCP: All blocks received. Cleaning up...\n");
 			return;
 		} else { /* The transmission continues */
-			printf("TCP: Sending a %s mode ACK packet to the server.\n", isNack ? "Negative" : "Selective");
+			printf("TCP: Sending a %s mode ACK packet to the server.\n", use_nack ? "Negative" : "Selective");
 			size_t len = sizeof(*ack_pkt) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
 			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
 			if (err == -1) {
@@ -338,7 +337,7 @@ static void tcp_worker(struct transmit_state *state, bool isNack) {
 				return;
 			}
 
-			if (isNack) { /* Prevent leaking memory from NACK mode */
+			if (use_nack) { /* Prevent leaking memory from NACK mode */
 				free(ack_pkt);
 			}
 
@@ -349,33 +348,31 @@ static void tcp_worker(struct transmit_state *state, bool isNack) {
 	}
 }
 
-/* SACK/NACK SHOULD BE A COMMAND LINE ARGUMENT */
-int main() {
+/* Prepares and runs the transmission */ // TODO: should probably change the args to a structure
+int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_t udp_port, const char *server_addr, uint16_t server_port, bool use_nack) {
 	/* Packets */
 	FileInformationPacket_t f_info;
 	UDPInformationPacket_t udp_info;
 
-	/* Other */
+	/* Thread state */
 	int err;
 	pthread_t udp_tid;
-
-	/* State that needs to be maintained for the TCP and UDP workers */
 	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 	/* Create the file */
-	state.file_fd = creat("out.txt", S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+	state.file_fd = creat(file_path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 	if (state.file_fd == -1) {
 		perror("open");
 		return errno;
 	}
 
 	/* Open the UDP socket and build the UDP info packet */
-	state.udp_socket_fd = get_udp_listener(CLI_UDP_A, CLI_UDP_P); //FIXME: error check these
+	state.udp_socket_fd = get_udp_listener(udp_listen_addr, udp_port);
 	udp_info = build_udp_info(state.udp_socket_fd);
+	printf("UDP: Listening on %s:%"PRIu16"\n", CLI_UDP_A, ntohs(udp_info.destination_port));
 
-	printf("Socket is bound! Waiting for data on %s:%"PRIu16"\n", CLI_UDP_A, ntohs(udp_info.destination_port));
-
-	state.tcp_socket_fd = connect_to_server(SRV_TCP_A, SRV_TCP_P);
+	/* Connect to the server */
+	state.tcp_socket_fd = connect_to_server(server_addr, server_port);
 	if (state.tcp_socket_fd == -1) {
 		return errno;
 	}
@@ -401,11 +398,10 @@ int main() {
 	state.sack->header.type = SACK;
 	state.sack->length = htonl(block_status_word_len - 1);
 
-	printf("Blocksize: %zu\n", state.block_packet_len - sizeof(FileBlockPacket_t));
-	printf("Number of blocks in file: %zu\n\n", state.num_blocks);
+	printf("TCP: %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
 
 	/* Spawn the UDP thread */
-	err = pthread_create(&udp_tid, NULL, udp_worker, &state);
+	err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err) {
 		errno = err;
 		perror("pthread_create");
@@ -416,10 +412,30 @@ int main() {
 	send(state.tcp_socket_fd, &udp_info, sizeof(udp_info), 0);
 
 	/* Begin TCP thread loop */
-	tcp_worker(&state, false);
+	tcp_loop(&state, use_nack);
 
 	pthread_join(udp_tid, NULL);
 
 	close(state.tcp_socket_fd);
+	close(state.udp_socket_fd);
+	close(state.file_fd);
+
+	return 0;
+}
+
+
+/* SACK/NACK SHOULD BE A COMMAND LINE ARGUMENT */
+int main() {
+	/* TODO: analyze cmdline args */
+
+	char *file_path = "out.txt";
+	char *udp_listen_addr = CLI_UDP_A;
+	char *server_addr = SRV_TCP_A;
+	uint16_t udp_port = CLI_UDP_P;
+	uint16_t server_port = SRV_TCP_P;
+	bool use_nack = false;
+
+	run_transmission(file_path, udp_listen_addr, udp_port, server_addr, server_port, use_nack);
+
 	return 0;
 }
