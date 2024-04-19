@@ -35,17 +35,12 @@ typedef enum WorkerStatus {
 	CLIENT_DONE = 1 << 1, /* Set when the client has received all blocks */
 } WorkerStatus_t;
 
-/* TODO: Combine these into a single struct */
-struct thread_state {
-	WorkerStatus_t status;
-	ACKPacket_t *ack_packet;
-	pthread_mutex_t lock;
-};
-
 struct transmit_state {
+	pthread_mutex_t lock;
+	ACKPacket_t *ack_packet;
 	FileBlockPacket_t *f_block;
-	struct thread_state *state;
 	size_t num_blocks;
+	WorkerStatus_t status;
 	int file_fd;
 	int socket_fd;
 	int error_code;
@@ -59,7 +54,7 @@ static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
  * Opens a TCP socket.
  * Returns the file descriptor for the socket.
  */
-static int get_tcp_listener(char *ip_addr, uint16_t port) {
+static int get_tcp_listener(const char *ip_addr, uint16_t port) {
 	int fd, err;
 	struct sockaddr_in address;
 
@@ -188,13 +183,15 @@ static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t n
 
 static void *udp_loop(void *arg) {
 	/* Extract args */
-	FileBlockPacket_t *send_buf = ((struct transmit_state*)arg)->f_block;
-	struct thread_state *state = ((struct transmit_state*)arg)->state;
-	const size_t num_blocks = ((struct transmit_state*)arg)->num_blocks;
-	int file_fd = ((struct transmit_state*)arg)->file_fd;
-	int socket_fd = ((struct transmit_state*)arg)->socket_fd;
-	const uint16_t blocksize = ((struct transmit_state*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
-	int *error_code = &((struct transmit_state*)arg)->error_code;
+	struct transmit_state *state = ((struct transmit_state*)arg);
+
+	FileBlockPacket_t *send_buf = state->f_block;
+	// struct thread_state *state = ((struct transmit_state*)arg)->state;
+	const size_t num_blocks = state->num_blocks;
+	int file_fd = state->file_fd;
+	int socket_fd = state->socket_fd;
+	const uint16_t blocksize = state->block_packet_len - sizeof(FileBlockPacket_t);
+	int *error_code = &state->error_code;
 
 	printf("UDP: Starting up...\n");
 
@@ -263,7 +260,7 @@ static void *udp_loop(void *arg) {
 	return NULL;
 }
 
-void tcp_worker(int sock_fd, struct thread_state *state) {
+void tcp_worker(int sock_fd, struct transmit_state *state) {
 	ssize_t len;
 	ControlHeader_t ctrl;
 	uint32_t ack_stream_length = 0;
@@ -334,7 +331,7 @@ void tcp_worker(int sock_fd, struct thread_state *state) {
 	pthread_mutex_unlock(&state->lock);
 }
 
-int main() {
+int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_t tcp_listen_port) {
 	/* file descriptors */
 	int serv_tcp_fd;
 	int client_tcp_fd;
@@ -346,17 +343,16 @@ int main() {
 	UDPInformationPacket_t udp_info;
 	FileBlockPacket_t *block;
 
-	/* address */
+	/* IP address of connected  client */
 	struct sockaddr_in client_addr;
 
 	/* Thread state */
 	uint16_t blocksize = 4096, packet_len;
 	pthread_t udp_tid;
-	struct transmit_state udp_arg;
-	struct thread_state state = {.status=0, .ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
+	struct transmit_state state = {.ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 
 	/* Open the file being transferred and build file info packet */
-	local_file_fd = open("RFC.txt", O_RDONLY); //FIXME: error check this
+	local_file_fd = open(file_path, O_RDONLY); //FIXME: error check this
 	f_info = get_fileinfo(local_file_fd, blocksize);
 
 	client_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -364,7 +360,7 @@ int main() {
 		return errno;
 	}
 
-	serv_tcp_fd = get_tcp_listener(SRV_TCP_A, SRV_TCP_P);
+	serv_tcp_fd = get_tcp_listener(tcp_listen_addr, tcp_listen_port);
 	if (serv_tcp_fd == -1) {
 		return errno;
 	}
@@ -403,15 +399,14 @@ int main() {
 	packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
 	block = malloc(packet_len);
 
-	udp_arg.f_block = block;
-	udp_arg.state = &state;
-	udp_arg.num_blocks = ntohl(f_info.num_blocks) + 1;
-	udp_arg.file_fd = local_file_fd;
-	udp_arg.socket_fd = client_udp_fd;
-	udp_arg.error_code = 0;
-	udp_arg.block_packet_len = packet_len;
+	state.f_block = block;
+	state.num_blocks = ntohl(f_info.num_blocks) + 1;
+	state.file_fd = local_file_fd;
+	state.socket_fd = client_udp_fd;
+	state.error_code = 0;
+	state.block_packet_len = packet_len;
 
-	int err = pthread_create(&udp_tid, NULL, udp_loop, &udp_arg);
+	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err == -1) {
 		perror("pthread_create");
 		return errno;
@@ -424,6 +419,14 @@ int main() {
 	close(client_udp_fd);
 	close(serv_tcp_fd);
 	close(local_file_fd);
+
+	return 0;
+}
+
+int main() {
+
+
+	run_transmission("RFC.txt", SRV_TCP_A, SRV_TCP_P);
 
 	return 0;
 }
