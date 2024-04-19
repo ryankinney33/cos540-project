@@ -33,7 +33,7 @@
 #define CLI_TCP_P   27021
 
 typedef enum WorkerStatus {
-	TCP_DONE_RECEIVE = 1 << 0, /* Set when the TCP thread receives a Complete packet from server */
+	TCP_DONE_RECEIVED = 1 << 0, /* Set when the TCP thread receives a Complete packet from server */
 	UDP_NO_MORE_BLOCKS = 1 << 1, /* Set when the UDP thread is done receiving blocks */
 	FILE_IS_COMPLETE = 1 << 2 /* Set when every block has been received from the server */
 } WorkerStatus_t;
@@ -237,7 +237,7 @@ static void *udp_worker(void *arg) {
 	const uint16_t block_packet_len = state->block_packet_len;
 	const uint16_t block_len = block_packet_len - sizeof(FileBlockPacket_t);
 
-	printf("\nUDP Listener starting:\n");
+	printf("UDP Listener starting:\n");
 
 	/* Read blocks and write them to the file */
 	while (!(state->status & FILE_IS_COMPLETE)) {
@@ -245,7 +245,7 @@ static void *udp_worker(void *arg) {
 		/* Read blocks until the done recv is received */
 		if (!(state->status & UDP_NO_MORE_BLOCKS)) {
 			size_t pkt_recvcount = 0;
-			while(!(state->status & TCP_DONE_RECEIVE)) {
+			while(!(state->status & TCP_DONE_RECEIVED)) {
 				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
 				if (read_len == -1) {
 					if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -314,50 +314,103 @@ static void tcp_worker(struct transmit_state *state, bool isNack) {
 	const int sock_fd = state->tcp_socket_fd;
 
 
-	while (!(state->status & FILE_IS_COMPLETE)) {
-		/* Receive the COMPLETE message */
-		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_DONTWAIT); // FIXME: error check
+//	while (!(state->status & FILE_IS_COMPLETE)) {
+// 		/* Receive the COMPLETE message */
+// 		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_DONTWAIT); // FIXME: error check
+// 		if (recv_len == -1) {
+// 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+// 				continue;
+// 			} else { //TODO: better error checking
+// 				perror("TCP: recv");
+// 				state->status |= FILE_IS_COMPLETE;
+// 				return;
+// 			}
+// 		}
+// 		if (received_complete.type == COMPLETE) {
+// 			state->status |= TCP_DONE_RECEIVED;
+// 		}
+//
+// 		/* Wait for the UDP transmissions to stop */
+// 		while (!(state->status & UDP_NO_MORE_BLOCKS)) {
+// 			sched_yield(); // Allow the UDP thread to work
+// 		}
+//
+// 		/* Build the ACK packet */
+// 		ack_pkt = build_ACK_packet(isNack, state->sack, state->num_blocks);
+// 		if (ack_pkt == NULL) { /* Transmission complete if NULL */
+// 			/* Send the COMPLETE message */
+// 			send(sock_fd, &done, sizeof(done), 0);
+// 			state->status |= FILE_IS_COMPLETE;
+// 			printf("TCP: All blocks received. Cleaning up...\n");
+// 			return;
+// 		} else {
+// 			/* Transmission continues */
+// 			/* Send the ack packet */
+// 			size_t len = sizeof(ACKPacket_t) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
+// 			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
+// 			if (err == -1) {
+// 				perror("TCP: send");
+// 				state->status |= FILE_IS_COMPLETE;
+// 				return;
+// 			}
+// 			if (isNack) { /* Free if using a NACK packet */
+// 				free(ack_pkt);
+// 			}
+// 			state->status &= ~UDP_NO_MORE_BLOCKS;
+//
+// 		}
+// 	}
+
+	printf("TCP: Starting up...\n");
+	while(1) {
+		/* Receive the Complete message from the server (nonblocking) */
+		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_DONTWAIT); /* FIXME: error check */
 		if (recv_len == -1) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				continue;
-			} else { //TODO: better error checking
-				perror("TCP: recv");
-				state->status |= FILE_IS_COMPLETE;
-				return;
 			}
 		}
-		if (received_complete.type == COMPLETE) {
-			state->status |= TCP_DONE_RECEIVE;
+
+		if (received_complete.type != COMPLETE) {
+			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
+			exit(EXIT_FAILURE);
 		}
 
-		/* Wait for the UDP transmissions to stop */
-		while (!(state->status & UDP_NO_MORE_BLOCKS)) {
-			sched_yield(); // Allow the UDP thread to work
-		}
+		/* Update the state */
+		pthread_mutex_lock(&state->lock);
+		state->status |= TCP_DONE_RECEIVED;
+
+		/* Wait for the UDP listener to stop receiving blocks */
+		do {
+			pthread_mutex_unlock(&state->lock);
+			sched_yield();
+			pthread_mutex_lock(&state->lock);
+		} while (!(state->status & UDP_NO_MORE_BLOCKS));
 
 		/* Build the ACK packet */
 		ack_pkt = build_ACK_packet(isNack, state->sack, state->num_blocks);
-		if (ack_pkt == NULL) { /* Transmission complete if NULL */
-			/* Send the COMPLETE message */
+		if (ack_pkt == NULL) { /* Check if the transmission is complete */
+			/* Send the complete message to the server */
 			send(sock_fd, &done, sizeof(done), 0);
 			state->status |= FILE_IS_COMPLETE;
 			printf("TCP: All blocks received. Cleaning up...\n");
 			return;
-		} else {
-			/* Transmission continues */
-			/* Send the ack packet */
-			size_t len = sizeof(ACKPacket_t) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
+		} else { /* The transmission continues */
+			size_t len = sizeof(*ack_pkt) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
 			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
 			if (err == -1) {
-				perror("TCP: send");
+				perror("TCP: sned");
 				state->status |= FILE_IS_COMPLETE;
 				return;
 			}
-			if (isNack) { /* Free if using a NACK packet */
+
+			if (isNack) { /* Prevent leaking memory from NACK mode */
 				free(ack_pkt);
 			}
-			state->status &= ~UDP_NO_MORE_BLOCKS;
 
+			/* Signal to the UDP thread to begin another round */
+			state->status &= ~(UDP_NO_MORE_BLOCKS | TCP_DONE_RECEIVED);
+			pthread_mutex_unlock(&state->lock);
 		}
 	}
 }
@@ -415,7 +468,7 @@ int main() {
 	state.sack->length = htonl(block_status_word_len - 1);
 
 	printf("Blocksize: %zu\n", state.block_packet_len - sizeof(FileBlockPacket_t));
-	printf("Number of blocks in file: %zu\n", state.num_blocks);
+	printf("Number of blocks in file: %zu\n\n", state.num_blocks);
 
 	/* Spawn the UDP thread */
 	err = pthread_create(&udp_tid, NULL, udp_worker, &state);
