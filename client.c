@@ -264,7 +264,7 @@ static void *udp_worker(void *arg) {
 			pkt_recvcount += 1;
 
 			/* Move file to correct position */
-			uint32_t idx = ntohl(f_block->index);
+			off_t idx = ntohl(f_block->index);
 
 			lseek(file_fd, idx * block_len, SEEK_SET);
 
@@ -363,7 +363,7 @@ int main() {
 	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 	/* Create the file */
-	state.file_fd = creat("/tmp/out.txt", S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+	state.file_fd = creat("out.txt", S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 	if (state.file_fd == -1) {
 		perror("open");
 		return errno;
