@@ -30,18 +30,19 @@
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
 
-typedef enum TransmitStatus {
+typedef enum WorkerStatus {
 	UDP_FINISHED = 1 << 0, /* Set when the UDP thread is done sending blocks */
 	CLIENT_DONE = 1 << 1, /* Set when the client has received all blocks */
-} TransmitStatus_t;
+} WorkerStatus_t;
 
+/* TODO: Combine these into a single struct */
 struct thread_state {
-	TransmitStatus_t status;
+	WorkerStatus_t status;
 	ACKPacket_t *ack_packet;
 	pthread_mutex_t lock;
 };
 
-struct udp_worker_arg {
+struct transmit_state {
 	FileBlockPacket_t *f_block;
 	struct thread_state *state;
 	size_t num_blocks;
@@ -185,15 +186,15 @@ static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t n
 /* Worker functions                                                                 */
 /************************************************************************************/
 
-static void *udp_worker(void *arg) {
+static void *udp_loop(void *arg) {
 	/* Extract args */
-	FileBlockPacket_t *send_buf = ((struct udp_worker_arg*)arg)->f_block;
-	struct thread_state *state = ((struct udp_worker_arg*)arg)->state;
-	const size_t num_blocks = ((struct udp_worker_arg*)arg)->num_blocks;
-	int file_fd = ((struct udp_worker_arg*)arg)->file_fd;
-	int socket_fd = ((struct udp_worker_arg*)arg)->socket_fd;
-	const uint16_t blocksize = ((struct udp_worker_arg*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
-	int *error_code = &((struct udp_worker_arg*)arg)->error_code;
+	FileBlockPacket_t *send_buf = ((struct transmit_state*)arg)->f_block;
+	struct thread_state *state = ((struct transmit_state*)arg)->state;
+	const size_t num_blocks = ((struct transmit_state*)arg)->num_blocks;
+	int file_fd = ((struct transmit_state*)arg)->file_fd;
+	int socket_fd = ((struct transmit_state*)arg)->socket_fd;
+	const uint16_t blocksize = ((struct transmit_state*)arg)->block_packet_len - sizeof(FileBlockPacket_t);
+	int *error_code = &((struct transmit_state*)arg)->error_code;
 
 	printf("UDP: Starting up...\n");
 
@@ -236,10 +237,6 @@ static void *udp_worker(void *arg) {
 				return NULL;
 			}
 			num_blocks_sent += 1;
-
-			if (num_blocks_sent == 150) {
-				break;
-			}
 
 		} while (num_read == blocksize);
 
@@ -353,9 +350,9 @@ int main() {
 	struct sockaddr_in client_addr;
 
 	/* Thread state */
-	uint16_t blocksize = 50, packet_len;
+	uint16_t blocksize = 4096, packet_len;
 	pthread_t udp_tid;
-	struct udp_worker_arg udp_arg;
+	struct transmit_state udp_arg;
 	struct thread_state state = {.status=0, .ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 
 	/* Open the file being transferred and build file info packet */
@@ -414,15 +411,14 @@ int main() {
 	udp_arg.error_code = 0;
 	udp_arg.block_packet_len = packet_len;
 
-	int err = pthread_create(&udp_tid, NULL, udp_worker, &udp_arg);
+	int err = pthread_create(&udp_tid, NULL, udp_loop, &udp_arg);
 	if (err == -1) {
 		perror("pthread_create");
 		return errno;
 	}
+	pthread_detach(udp_tid);
 
 	tcp_worker(client_tcp_fd, &state);
-
-	// pthread_join(udp_tid, NULL); /* Wait for the UDP thread to exit */
 
 	close(client_tcp_fd);
 	close(client_udp_fd);
