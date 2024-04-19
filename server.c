@@ -30,6 +30,8 @@
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
 
+/* TODO: check ALL header preambles for correctness */
+
 typedef enum WorkerStatus {
 	UDP_FINISHED = 1 << 0, /* Set when the UDP thread is done sending blocks */
 	CLIENT_DONE = 1 << 1, /* Set when the client has received all blocks */
@@ -186,7 +188,6 @@ static void *udp_loop(void *arg) {
 	struct transmit_state *state = ((struct transmit_state*)arg);
 
 	FileBlockPacket_t *send_buf = state->f_block;
-	// struct thread_state *state = ((struct transmit_state*)arg)->state;
 	const size_t num_blocks = state->num_blocks;
 	int file_fd = state->file_fd;
 	int socket_fd = state->socket_fd;

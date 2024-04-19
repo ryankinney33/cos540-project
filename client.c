@@ -26,11 +26,13 @@
 #define SRV_TCP_A   "127.0.0.1"
 #define SRV_TCP_P   27020
 #define CLI_UDP_A   "0.0.0.0"
-#define CLI_UDP_P   0
+#define CLI_UDP_P   0 /* 0 makes the OS automatically choose an available port */
 
 /* These are not used... */
 #define CLI_TCP_A   "0.0.0.0"
 #define CLI_TCP_P   27021
+
+/* TODO: check ALL header preambles for correctness */
 
 typedef enum WorkerStatus {
 	TCP_DONE_RECEIVED = 1 << 0, /* Set when the TCP thread receives a Complete packet from server */
@@ -398,7 +400,9 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 	state.sack->header.type = SACK;
 	state.sack->length = htonl(block_status_word_len - 1);
 
-	printf("TCP: %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
+	printf("TCP: The file contains %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
+
+	putchar('\n');
 
 	/* Spawn the UDP thread */
 	err = pthread_create(&udp_tid, NULL, udp_loop, &state);
