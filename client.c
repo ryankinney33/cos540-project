@@ -3,6 +3,9 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <string.h>
+
+#include <getopt.h>
 
 /* Sockets */
 #include <sys/socket.h>
@@ -59,6 +62,22 @@ static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 /*******************************************************************************************/
 /* Utility functions                                                                       */
 /*******************************************************************************************/
+
+/*
+ * Extracts and validates the port number stored in a string.
+ * Returns 0 and updates errno on error.
+ */
+uint16_t parse_port(const char *port_str) {
+	errno = 0;
+	char *ptr;
+	unsigned long tmp = strtoul(port_str, &ptr, 0);
+	if (errno || *ptr || tmp > UINT16_MAX) {
+		if (!errno)
+			errno = EINVAL;
+		return 0;
+	}
+	return 0;
+}
 
 /* Connects to the server's TCP socket listening at the specified address */
 int connect_to_server(const char *ip_addr, uint16_t port) {
@@ -429,15 +448,97 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 
 
 /* SACK/NACK SHOULD BE A COMMAND LINE ARGUMENT */
-int main() {
-	/* TODO: analyze cmdline args */
-
-	char *file_path = "out.txt";
-	char *udp_listen_addr = CLI_UDP_A;
-	char *server_addr = SRV_TCP_A;
+int main(int argc, char **argv) {
+	const char *file_path = NULL;
+	const char *udp_listen_addr = CLI_UDP_A;
+	const char *server_addr = SRV_TCP_A;
 	uint16_t udp_port = CLI_UDP_P;
 	uint16_t server_port = SRV_TCP_P;
 	bool use_nack = false;
+
+	/* Flags for command line argument parsing */
+	int c;
+	bool bflag = false, pflag = false, Pflag = false, sflag = false;
+	static const char usage[] =
+		"Usage: %s [OPTION]... FILE\n"
+		"Reference client implementation of the PDP-11 for the COS 540 Project.\n"
+		"\n"
+		"options:\n"
+		"-b\t\tbind to this address (default: all interfaces)\n"
+		"-h,-?\t\tshow this help message and exit\n"
+		"-n\t\tuse negative acknowledgement mode\n"
+		"-p\t\tbind to this port (default: automatically assigned port)\n"
+		"-P\t\tport server is listening on (default: %hu)\n"
+		"-s\t\taddress of the server (default: %s)\n"
+		"\n"
+		"The file transmission is completed according to RFC COS540.\n";
+
+	argv[0] = argv[0];
+
+	/* Process command line arguments*/
+	while ((c = getopt(argc, argv, "b:hnp:P:s:")) != -1) {
+		switch (c) {
+		case 'b':
+			if (bflag) {
+				fprintf(stderr, "%s: warning: bind address specified multiple times\n", argv[0]);
+			} else {
+				bflag = true;
+				udp_listen_addr = optarg;
+			}
+			break;
+		case 'h':
+			fprintf(stderr, usage, argv[0], SRV_TCP_P, SRV_TCP_A);
+			return 0;
+		case 'n':
+			use_nack = true;
+			break;
+		case 'p':
+			if (pflag) {
+				fprintf(stderr, "%s: warning: binding port specified multiple times.\n", argv[0]);
+			} else {
+				pflag = true;
+				udp_port = parse_port(optarg);
+				if (errno) {
+					fprintf(stderr, "%s: error: invalid port specification: %s\n", argv[0], optarg);
+				}
+			}
+			break;
+		case 'P':
+			if (Pflag) {
+				fprintf(stderr, "%s: warning: server port specified multiple times.\n", argv[0]);
+			} else {
+				Pflag = true;
+				server_port = parse_port(optarg);
+				if (errno) {
+					fprintf(stderr, "%s: error: invalid port specification: %s\n", argv[0], optarg);
+					return 1;
+				}
+			}
+			break;
+		case 's':
+			if (sflag) {
+				fprintf(stderr, "%s: warning: server address specified multiple times.\n", argv[0]);
+			} else {
+				sflag = true;
+				server_addr = optarg;
+			}
+			break;
+		case '?':
+			fprintf(stderr, "Try '%s -h' for more information.\n", argv[0]);
+			return 1;
+		default:
+			break;
+		}
+	}
+
+	/* Pull the file name */
+	if (optind == argc) {
+		fprintf(stderr, "%s: error, no output file specified.\n"
+		                "You have to specify one output file.\n"
+				"Try '%s -h' for more information.\n", argv[0], argv[0]);
+		return 1;
+	}
+	file_path = argv[optind];
 
 	run_transmission(file_path, udp_listen_addr, udp_port, server_addr, server_port, use_nack);
 
