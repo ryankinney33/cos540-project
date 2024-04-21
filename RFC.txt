@@ -25,8 +25,18 @@ grade in COS 540.
 --------------------
 1. Server opens listening TCP socket and waits for connection
 2. Client connects to server.
-3. Server sends File Information packet.
-4. Client sends UDP Information packet.
+3. Client sends a File Information packet with num_blocks set to 0 and
+   the blocksize set to the expected size.
+4. Server determines minimum possible blocksize from the file size and
+   expected blocksize, the number of blocks, and sends the File
+   Information packet back to the client with the true blocksize and
+   number of blocks.
+5. Clients sends a 0 length packet over UDP to the server.
+6. Server receives the UDP packet to determine the address to send
+   blocks to.
+7. Server sends a UDP Ready packet to the client
+
+File transmission begins.
 
 2.1.2 Data Transmission (server-side)
 -------------------------------------
@@ -39,7 +49,7 @@ grade in COS 540.
 6. Send all missing blocks to the client.
 7. Send Complete packet.
 8. Go to step 3.
-9. Transmission complete, close TCP connection to client.
+9. Transmission complete, close all connections to the client.
 
 2.1.3 Data Transmission (client-side)
 -------------------------------------
@@ -50,7 +60,7 @@ grade in COS 540.
 3. Send an ACK packet for the appropriate ACK mode.
 4. Go to Step 1.
 5. Send a Complete Packet.
-6. Transmission complete, close connection to the server.
+6. Transmission complete, close all connections to the server.
 
 3 Specification
 ===============
@@ -62,7 +72,7 @@ control packets are communicated over a TCP connection, and the data
 packets are sent through UDP.
 
 All control packets are preceded by a Control header. Control packets
-include the UDP Information Packet, the File Information Packet, the
+include the UDP Ready Packet, the File Information Packet, the
 ACK packet, and the Complete Packet.
 
 3.1.1 Control Header
