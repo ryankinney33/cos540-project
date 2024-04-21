@@ -23,15 +23,15 @@
 
 #include "packets.h"
 
-/* Ideally, these would be set by the Makefile... */
+/* Default IP address. Will be overrideable by command line arguments. */
 #define SRV_TCP_A   "0.0.0.0"
-#define SRV_TCP_P   27020
+#define SRV_TCP_P   8888
 
-/* These are not used... */
-#define CLI_UDP_P   27019
-#define CLI_UDP_A   "127.0.0.1"
-#define CLI_TCP_A   "0.0.0.0"
-#define CLI_TCP_P   27021
+// /* These are not used... */
+// #define CLI_UDP_P   27019
+// #define CLI_UDP_A   "127.0.0.1"
+// #define CLI_TCP_A   "0.0.0.0"
+// #define CLI_TCP_P   27021
 
 /* TODO: check ALL header preambles for correctness */
 
@@ -387,7 +387,7 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	socklen_t client_addr_len = sizeof(client_addr);
 
 	/* Thread state */
-	uint16_t blocksize = 4, packet_len;
+	uint16_t blocksize = 4096, packet_len;
 	pthread_t udp_tid;
 	struct transmit_state state = {.ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 

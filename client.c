@@ -26,15 +26,15 @@
 /* Protocol */
 #include "packets.h"
 
-/* Ideally, these would be set by the Makefile... */
+/* Defaults. Overridden command line arguments. */
 #define SRV_TCP_A   "127.0.0.1"
-#define SRV_TCP_P   27020
+#define SRV_TCP_P   8888
 #define CLI_UDP_A   "0.0.0.0"
 #define CLI_UDP_P   0 /* 0 makes the OS automatically choose an available port */
 
-/* These are not used... */
-#define CLI_TCP_A   "0.0.0.0"
-#define CLI_TCP_P   27021
+// /* These are not used... */
+// #define CLI_TCP_A   "0.0.0.0"
+// #define CLI_TCP_P   27021
 
 /* TODO: check ALL header preambles for correctness */
 
