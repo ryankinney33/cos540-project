@@ -387,13 +387,12 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	socklen_t client_addr_len = sizeof(client_addr);
 
 	/* Thread state */
-	uint16_t blocksize = 4096, packet_len;
+	uint16_t blocksize, packet_len;
 	pthread_t udp_tid;
 	struct transmit_state state = {.ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 
 	/* Open the file being transferred and build file info packet */
 	local_file_fd = open(file_path, O_RDONLY); //FIXME: error check this
-	f_info = get_fileinfo(local_file_fd, blocksize);
 
 	serv_tcp_fd = get_tcp_listener(tcp_listen_addr, tcp_listen_port);
 	if (serv_tcp_fd == -1) {
@@ -415,6 +414,13 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 		inet_ntop(AF_INET, &client_addr.sin_addr, tmp, INET_ADDRSTRLEN);
 		printf("Received a connection from %s.\n", tmp);
 	}
+
+	/* Get the wanted blocksize from the client */
+	recv(client_tcp_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
+	blocksize = ntohs(f_info.blocksize) + 1;
+
+	/* Build the file information packet with the file size and true blocksize */
+	f_info = get_fileinfo(local_file_fd, blocksize);
 
 	/* Send the file information packet to the client */
 	send(client_tcp_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this

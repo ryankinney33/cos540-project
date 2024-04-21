@@ -240,6 +240,8 @@ ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_t num_b
 /* UDP thread: Read blocks of data from the UDP socket and write them to the file. */
 void *udp_loop(void *arg) {
 	ssize_t read_len;
+	int8_t successive_zeros = 0; /* Counts up when a round with 0 blocks occurs */
+
 
 	struct transmit_state *state = (struct transmit_state*)arg;
 
@@ -255,11 +257,12 @@ void *udp_loop(void *arg) {
 	pthread_mutex_lock(&state->lock);
 	while (!(state->status & FILE_IS_COMPLETE)) {
 		uint64_t pkt_recvcount = 0;
+		bool round_occurred = false;
 
 		/* Read blocks and write them to the file */
 		while (!(state->status & UDP_NO_MORE_BLOCKS)) {
 			pthread_mutex_unlock(&state->lock);
-
+			round_occurred = true;
 			read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
 			if (read_len == -1) {
 				if (errno == EAGAIN || errno == EWOULDBLOCK) { /* No message available yet */
@@ -285,6 +288,17 @@ void *udp_loop(void *arg) {
 
 			pthread_mutex_lock(&state->lock);
 			set_block_status(idx, state->sack); /* Mark the block as acquired */
+		}
+
+		if (round_occurred && pkt_recvcount == 0) {
+			successive_zeros += 1;
+
+			if (successive_zeros >= 10) {
+				fprintf(stderr, "UDP: 10 rounds in a row with all blocks dropped. Giving up.\nConsider reducing the blocksize and trying again.\n");
+				exit(EXIT_FAILURE);
+			}
+		} else if (round_occurred) {
+			successive_zeros = 0;
 		}
 		pthread_mutex_unlock(&state->lock);
 		sched_yield(); /* Allow the TCP thread to work */
@@ -361,7 +375,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 }
 
 /* Prepares and runs the transmission */ // TODO: should probably change the args to a structure
-int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_t udp_port, const char *server_addr, uint16_t server_port, bool use_nack) {
+int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_t udp_port, const char *server_addr, uint16_t server_port, bool use_nack, uint16_t expected_blocksize) {
 	/* Packets */
 	FileInformationPacket_t f_info;
 
@@ -370,6 +384,8 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 	struct sockaddr_in server_address;
 	pthread_t udp_tid;
 	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+	printf("Using %s ACK mode.\n", (use_nack)? "Negative" : "Selective");
 
 	/* Create the file */
 	state.file_fd = creat(file_path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
@@ -387,6 +403,15 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 	if (state.tcp_socket_fd == -1) {
 		return errno;
 	}
+
+	/* Send the wanted blocksize to the server */
+	f_info.header.head[0] = 'P';
+	f_info.header.head[1] = 'D';
+	f_info.header.head[2] = 'P';
+	f_info.header.type = FILEINFO;
+	f_info.num_blocks = 0;
+	f_info.blocksize = htons(expected_blocksize - 1);
+	send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
 
 	/* Receive the file size from the server */
 	recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
@@ -444,8 +469,6 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 				break;
 			break; // TODO: handle this correctly
 		}
-
-		printf("Timeout! trying again!\n");
 	}
 	putchar('\n');
 
@@ -475,17 +498,19 @@ int main(int argc, char **argv) {
 	const char *server_addr = SRV_TCP_A;
 	uint16_t udp_port = CLI_UDP_P;
 	uint16_t server_port = SRV_TCP_P;
+	uint16_t blocksize = 1024;
 	bool use_nack = false;
 
 	/* Flags for command line argument parsing */
 	int c;
-	bool bflag = false, pflag = false, Pflag = false, sflag = false;
+	bool bflag = false, cflag = false, pflag = false, Pflag = false, sflag = false;
 	static const char usage[] =
 		"Usage: %s [OPTION]... FILE\n"
 		"Reference client implementation of the PDP-11 for the COS 540 Project.\n"
 		"\n"
 		"options:\n"
 		"-b\t\tbind to this address (default: all interfaces)\n"
+		"-c\t\tthe expected blocksize (default 1024)\n"
 		"-h\t\tshow this help message and exit\n"
 		"-n\t\tuse negative acknowledgement mode\n"
 		"-p\t\tbind to this port (default: automatically assigned port)\n"
@@ -497,7 +522,7 @@ int main(int argc, char **argv) {
 	argv[0] = argv[0];
 
 	/* Process command line arguments*/
-	while ((c = getopt(argc, argv, "b:hnp:P:s:")) != -1) {
+	while ((c = getopt(argc, argv, "b:c:hnp:P:s:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (bflag) {
@@ -505,6 +530,17 @@ int main(int argc, char **argv) {
 			} else {
 				bflag = true;
 				udp_listen_addr = optarg;
+			}
+			break;
+		case 'c':
+			if (cflag) {
+				fprintf(stderr, "%s: warning: blocksize specified multiple times.\n", argv[0]);
+			} else {
+				cflag = true;
+				blocksize = parse_port(optarg); /* Not really a port, but fits into about the same range */
+				if (errno || blocksize == 0 || blocksize > 4096) {
+					fprintf(stderr, "%s: error: invalid blocksize: %s\n", argv[0], optarg);
+				}
 			}
 			break;
 		case 'h':
@@ -561,7 +597,7 @@ int main(int argc, char **argv) {
 	}
 	file_path = argv[optind];
 
-	run_transmission(file_path, udp_listen_addr, udp_port, server_addr, server_port, use_nack);
+	run_transmission(file_path, udp_listen_addr, udp_port, server_addr, server_port, use_nack, blocksize);
 
 	return 0;
 }
