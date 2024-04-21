@@ -254,31 +254,46 @@ void *udp_loop(void *arg) {
 		while (!(state->status & UDP_NO_MORE_BLOCKS)) {
 			pthread_mutex_unlock(&state->lock);
 			round_occurred = true;
-			read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
-			if (read_len == -1) {
-				if (errno == EAGAIN || errno == EWOULDBLOCK) { /* No message available yet */
-					/* Check if the TCP thread has flagged completion */
-					pthread_mutex_lock(&state->lock);
-					if (state->status & TCP_DONE_RECEIVED) {
-						state->status |= UDP_NO_MORE_BLOCKS; /* Receive no more blocks */
-						printf("UDP: Received %"PRIu64" blocks this round.\n", pkt_recvcount);
-					}
-					continue;
-				}
+
+			struct timeval timeout;
+			fd_set fdlist;
+
+			/* Set 5 ms timeout */
+			timeout.tv_sec = 0;
+			timeout.tv_usec = 5000;
+
+			FD_ZERO(&fdlist);
+			FD_SET(state->udp_socket_fd, &fdlist);
+
+			if (select(state->udp_socket_fd + 1, &fdlist, NULL, NULL, &timeout) == -1) { /* I think one thread using select/poll/epoll on two sockets would make this project way easier */
+				perror("UDP: select");
+				exit(errno); /* FIXME: better error checking */
 			}
 
-			pkt_recvcount += 1;
+			if (FD_ISSET(state->udp_socket_fd, &fdlist)) { /* Check if data was received */
+				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
 
-			/* Move file to correct position */
-			off_t idx = ntohl(f_block->index);
+				pkt_recvcount += 1;
 
-			lseek(file_fd, idx * block_len, SEEK_SET);
+				/* Move file to correct position */
+				off_t idx = ntohl(f_block->index);
 
-			/* Write the block into the file */
-			write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+				lseek(file_fd, idx * block_len, SEEK_SET);
 
-			pthread_mutex_lock(&state->lock);
-			set_block_status(idx, state->sack); /* Mark the block as acquired */
+				/* Write the block into the file */
+				write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+
+				pthread_mutex_lock(&state->lock);
+				set_block_status(idx, state->sack); /* Mark the block as acquired */
+			} else { /* Timeout */
+				/* Check if the TCP thread has flagged completion */
+				pthread_mutex_lock(&state->lock);
+				if (state->status & TCP_DONE_RECEIVED) {
+					state->status |= UDP_NO_MORE_BLOCKS; /* Receive no more blocks */
+					printf("UDP: Received %"PRIu64" blocks this round.\n", pkt_recvcount);
+				}
+				continue;
+			}
 		}
 
 		if (round_occurred && pkt_recvcount == 0) {
@@ -365,7 +380,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 	}
 }
 
-/* Prepares and runs the transmission */ // TODO: should probably change the args to a structure
+/* Prepares and runs the transmission */
 int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_t udp_port, const char *server_addr, uint16_t server_port, bool use_nack, uint16_t expected_blocksize) {
 	/* Packets */
 	FileInformationPacket_t f_info;
@@ -483,6 +498,7 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 	return 0;
 }
 
+/* Process command line arguments and begin transmission */
 int main(int argc, char **argv) {
 	const char *file_path = NULL;
 	const char *udp_listen_addr = CLI_UDP_A;
@@ -582,7 +598,7 @@ int main(int argc, char **argv) {
 	/* Pull the file name */
 	if (optind == argc) {
 		fprintf(stderr, "%s: error, no output file specified.\n"
-		                "You have to specify one output file.\n"
+		                "You have to specify the output file name.\n"
 				"Try '%s -h' for more information.\n", argv[0], argv[0]);
 		return 1;
 	}
