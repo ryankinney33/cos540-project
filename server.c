@@ -54,6 +54,7 @@ struct transmit_state {
 
 /* Global data */
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
+static const UDPReadyPacket_t ready = UDP_READY_INITIALIZER;
 
 /*
  * Opens a TCP socket.
@@ -101,6 +102,42 @@ static int get_tcp_listener(const char *ip_addr, uint16_t port) {
 	}
 
 	printf("Socket is bound! Waiting for a connection on %s:%"PRIu16"\n", ip_addr, port);
+
+	return fd;
+}
+
+static int get_udp_socket(const char *ip_addr, uint16_t port) {
+	int fd, err;
+	struct sockaddr_in address;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd == -1) {
+		return errno;
+	}
+
+	/* Avoid time-wait */
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
+		perror("setsockopt"); /* Not a fatal error... */
+	}
+
+	/* Create address to bind to */
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
+	if (err == 0) {
+		fprintf(stderr, "inet_pton: invalid IP address\n");
+		errno = EINVAL;
+		return -1;
+	} else if (err == -1) {
+		perror("inet_pton");
+		return -1;
+	}
+
+	/* Bind socket to address */
+	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
+		perror("bind");
+		return -1;
+	}
 
 	return fd;
 }
@@ -342,14 +379,15 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 
 	/* Packets */
 	FileInformationPacket_t f_info;
-	UDPInformationPacket_t udp_info;
+	// UDPInformationPacket_t udp_info;
 	FileBlockPacket_t *block;
 
 	/* IP address of connected  client */
 	struct sockaddr_in client_addr;
+	socklen_t client_addr_len = sizeof(client_addr);
 
 	/* Thread state */
-	uint16_t blocksize = 4096, packet_len;
+	uint16_t blocksize = 4, packet_len;
 	pthread_t udp_tid;
 	struct transmit_state state = {.ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 
@@ -357,18 +395,15 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	local_file_fd = open(file_path, O_RDONLY); //FIXME: error check this
 	f_info = get_fileinfo(local_file_fd, blocksize);
 
-	client_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (client_udp_fd == -1) {
-		return errno;
-	}
-
 	serv_tcp_fd = get_tcp_listener(tcp_listen_addr, tcp_listen_port);
 	if (serv_tcp_fd == -1) {
 		return errno;
 	}
 
+	client_udp_fd = get_udp_socket(tcp_listen_addr, tcp_listen_port);
+
 	/* Receive a connection on the socket */
-	client_tcp_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &(socklen_t){sizeof(client_addr)});
+	client_tcp_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &client_addr_len);
 	if (client_tcp_fd == -1) {
 		perror("accept");
 		return errno;
@@ -384,15 +419,12 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	/* Send the file information packet to the client */
 	send(client_tcp_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this
 
-	/* Receive the UDP information packet from the client */
-	recv(client_tcp_fd, &udp_info, sizeof(udp_info), 0);
+	/* Receive the UDP information from the client */
+	recvfrom(client_udp_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len);
+	send(client_tcp_fd, &ready, sizeof(ready), 0); //FIXME: error check this
+	printf("Client is listening on port %"PRIu16"\n\n", ntohs(client_addr.sin_port));
 
-	printf("Client is listening on port %"PRIu16"\n\n", ntohs(udp_info.destination_port));
-
-	/* Write the UDP port the client is using into the address structure */
-	client_addr.sin_port = udp_info.destination_port;
-
-	/* Connect, so we can use send() instead of sendto() */
+	/* Connect to client UDP socket, so we can use send() instead of sendto(), and store less state information */
 	if (connect(client_udp_fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
 		perror("connect");
 		return errno; /* TODO: cleanup */

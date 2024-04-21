@@ -5,7 +5,7 @@
 
 /* Constants used in the control packet header */
 typedef enum PType {
-	UDPINFO,
+	UDPRDY,
 	FILEINFO,
 	SACK,
 	NACK,
@@ -17,11 +17,6 @@ typedef struct ControlHeader { /* PDP-11 Control Packet Header */
 	char head[3]; /* Will contain "PDP" */
 	PType_t type; /* The type of control packet */
 } __attribute__((packed)) ControlHeader_t;
-
-typedef struct UDPInformationPacket {
-	ControlHeader_t header; /* PDP-11 Control Packet Header */
-	uint16_t destination_port; /* Port the client is listening on */
-} __attribute__((packed)) UDPInformationPacket_t;
 
 typedef struct FileInformationPacket {
 	ControlHeader_t header; /* PDP-11 Control Packet Header */
@@ -36,9 +31,11 @@ typedef struct ACKPacket {
 } __attribute__((packed)) ACKPacket_t;
 
 typedef ControlHeader_t CompletePacket_t; /* Complete Packet */
+typedef ControlHeader_t UDPReadyPacket_t; /* UDP Ready Packet */
 
-/* The default Control Packet Header */
+/* The default Control Packet Headers */
 #define CONTROL_HEADER_DEFAULT {.head={'P','D','P'}, .type=COMPLETE}
+#define UDP_READY_INITIALIZER {.head={'P', 'D', 'P'}, .type=UDPRDY}
 
 /* Data Packet Definition */
 typedef struct FileBlockPacket {

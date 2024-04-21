@@ -80,34 +80,18 @@ and an identification number specifying the payload type.
 The preamble consists of 3 octets, equivalent to the US-ASCII
 character sequence "PDP". The PType field is a numerical value
 indicating the contents of the remainder of the packet.
-  0: UDP Information
+  0: UDP Ready
   1: File Information
   2: SACK
   3: NACK
   4: Complete
 
-3.1.2 UDP Information Packet
+3.1.2 UDP Ready Packet
 ------------------------------
-This packet is transmitted from the client to the server. It
-communicates the UDP IP address and port, along with the block size.
-The UDP information packet is 6 octets in length.
-
-Format
-------
-                 0      7 8     15 16    23 24      31
-                +--------+--------+--------+--------+
-                |           Control Header          |
-                +--------+--------+--------+--------+
-                |   Destination   |
-                |      Port       |
-                +--------+--------+
-                    UDP Information Packet Format
-
-Fields
-------
-Destination Port: 16 bits
-  Indicates the port at which the client is expecting data packets from
-  the server. Destination port is 16 bits long.
+This packet is transmitted from the server to the client when the
+server has received the UDP packet from the client to determine the
+address and port to send the file blocks to. It consists of only the
+Control header with PType set to UDP Ready. It is 4 octets long.
 
 3.1.3 File Information Packet
 -------------------------------

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <getopt.h>
+#include <sys/select.h>
 
 /* Sockets */
 #include <sys/socket.h>
@@ -79,10 +80,28 @@ uint16_t parse_port(const char *port_str) {
 	return tmp;
 }
 
-/* Connects to the server's TCP socket listening at the specified address */
-int connect_to_server(const char *ip_addr, uint16_t port) {
-	int fd, err;
+/* Updates errno on error */
+struct sockaddr_in parse_address(const char *ip_address, uint16_t port) {
 	struct sockaddr_in address;
+	int err;
+
+	/* Set the IP address */
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	err = inet_pton(AF_INET, ip_address, &address.sin_addr);
+	if (err == 0) {
+		fprintf(stderr, "inet_pton: invalid IP address\n");
+		errno = EINVAL;
+	} else if (err == -1) {
+		perror("inet_pton");
+	}
+
+	return address;
+}
+
+/* Connects to the server's TCP socket listening at the specified address */
+int connect_to_server(struct sockaddr_in *address) {
+	int fd;
 
 	/* Open the TCP socket */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -91,21 +110,8 @@ int connect_to_server(const char *ip_addr, uint16_t port) {
 		return -1;
 	}
 
-	/* Set the IP address */
-	address.sin_family = AF_INET;
-	address.sin_port = htons(port);
-	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
-	if (err == 0) {
-		fprintf(stderr, "TCP: inet_pton: invalid IP address\n");
-		errno = EINVAL;
-		return -1;
-	} else if (err == -1) {
-		perror("TCP: inet_pton");
-		return -1;
-	}
-
-	printf("TCP: Connecting to %s:%"PRIu16"\n", ip_addr, port);
-	if (connect(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
+	// printf("TCP: Connecting to %s:%"PRIu16"\n", ip_addr, port);
+	if (connect(fd, (struct sockaddr *)address, sizeof(*address)) == -1) {
 		perror("TCP: connect");
 		return -1;
 	}
@@ -118,7 +124,7 @@ int connect_to_server(const char *ip_addr, uint16_t port) {
  * Returns the file descriptor for the socket.
  */
 int get_udp_listener(const char *ip_addr, uint16_t port) {
-	int fd, err;
+	int fd;
 	struct sockaddr_in address;
 
 	/* Open the UDP socket (nonblocking) */
@@ -131,38 +137,23 @@ int get_udp_listener(const char *ip_addr, uint16_t port) {
 	// /* Increase the buffer size of the socket */
 	// setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &(int){1024 * 1024 * 24}, sizeof(int));
 
-	/* Set the IP address */
-	address.sin_family = AF_INET;
-	address.sin_port = htons(port);
-	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
-	if (err == 0) {
-		fprintf(stderr, "UDP: inet_pton: invalid IP address\n");
-		errno = EINVAL;
-		return -1;
-	} else if (err == -1) {
-		perror("UDP: inet_pton");
-		return -1;
-	}
+	address = parse_address(ip_addr, port);
 
 	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
 		perror("UDP: bind");
 		return -1;
 	}
 
-	return fd;
-}
-
-/* Builds the UDP Information Packet to be sent to the server */
-UDPInformationPacket_t build_udp_info(int socket_fd) {
-	struct sockaddr_in addr;
-
-	if (getsockname(socket_fd, (struct sockaddr *)&addr, &(socklen_t){sizeof(addr)}) == -1) {
-		perror("UDP: getsockname");
-		exit(errno); /* A fatal error occurred */
+	if (port == 0) {
+		if (getsockname(fd, (struct sockaddr *)&address, &(socklen_t){sizeof(address)}) == -1) {
+			perror("UDP: getsockname");
+			return -1;
+		}
 	}
 
-	UDPInformationPacket_t pkt = {.header = CONTROL_HEADER_DEFAULT, .destination_port = addr.sin_port};
-	return pkt;
+	printf("UDP: Listening on %s:%"PRIu16"\n", ip_addr, ntohs(address.sin_port));
+
+	return fd;
 }
 
 /* Sets the flag for block at idx to "received" */
@@ -373,10 +364,10 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_t udp_port, const char *server_addr, uint16_t server_port, bool use_nack) {
 	/* Packets */
 	FileInformationPacket_t f_info;
-	UDPInformationPacket_t udp_info;
 
 	/* Thread state */
 	int err;
+	struct sockaddr_in server_address;
 	pthread_t udp_tid;
 	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
@@ -387,13 +378,12 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 		return errno;
 	}
 
-	/* Open the UDP socket and build the UDP info packet */
+	/* Open the UDP socket */
 	state.udp_socket_fd = get_udp_listener(udp_listen_addr, udp_port);
-	udp_info = build_udp_info(state.udp_socket_fd);
-	printf("UDP: Listening on %s:%"PRIu16"\n", CLI_UDP_A, ntohs(udp_info.destination_port));
 
 	/* Connect to the server */
-	state.tcp_socket_fd = connect_to_server(server_addr, server_port);
+	server_address = parse_address(server_addr, server_port);
+	state.tcp_socket_fd = connect_to_server(&server_address);
 	if (state.tcp_socket_fd == -1) {
 		return errno;
 	}
@@ -421,6 +411,42 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 
 	printf("TCP: The file contains %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
 
+	/* Initialize UDP connection with server */
+	while(1) {
+		err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)&server_address, sizeof(server_address));
+		if (err == -1) {
+			perror("sendto");
+			return errno;
+		}
+
+		/* Set 500 ms timeout */
+		struct timeval timeout;
+		fd_set fdlist;
+
+		timeout.tv_sec = 0;
+		timeout.tv_usec = 500000;
+
+		FD_ZERO(&fdlist);
+		FD_SET(state.tcp_socket_fd, &fdlist);
+
+		err = select(state.tcp_socket_fd + 1, &fdlist, NULL, NULL, &timeout); /* FIXME: ERROR CHECK */
+		if (err == -1) {
+			perror("select");
+			return errno;
+		}
+
+		/* see if data came in */
+		if (FD_ISSET(state.tcp_socket_fd, &fdlist)) {
+			/* Read the data */
+			UDPReadyPacket_t rdy;
+			err = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), 0); /* FIXME: ERROR CHECK */
+			if (rdy.type == UDPRDY)
+				break;
+			break; // TODO: handle this correctly
+		}
+
+		printf("Timeout! trying again!\n");
+	}
 	putchar('\n');
 
 	/* Spawn the UDP thread */
@@ -430,9 +456,6 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 		perror("pthread_create");
 		return errno;
 	}
-
-	/* Send the UDP Info to the server */
-	send(state.tcp_socket_fd, &udp_info, sizeof(udp_info), 0);
 
 	/* Begin TCP thread loop */
 	tcp_loop(&state, use_nack);
@@ -446,8 +469,6 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 	return 0;
 }
 
-
-/* SACK/NACK SHOULD BE A COMMAND LINE ARGUMENT */
 int main(int argc, char **argv) {
 	const char *file_path = NULL;
 	const char *udp_listen_addr = CLI_UDP_A;
