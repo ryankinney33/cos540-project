@@ -144,15 +144,6 @@ int get_udp_listener(const char *ip_addr, uint16_t port) {
 		return -1;
 	}
 
-	if (port == 0) {
-		if (getsockname(fd, (struct sockaddr *)&address, &(socklen_t){sizeof(address)}) == -1) {
-			perror("UDP: getsockname");
-			return -1;
-		}
-	}
-
-	printf("UDP: Listening on %s:%"PRIu16"\n", ip_addr, ntohs(address.sin_port));
-
 	return fd;
 }
 
