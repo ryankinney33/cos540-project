@@ -1,4 +1,5 @@
-CFLAGS := -Wall -Wextra -g -pipe
+CFLAGS := -Wall -Wextra -g -pipe -std=gnu99
+LDLIBS := -lpthread
 
 .PHONY: all clean
 all: server client
