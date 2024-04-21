@@ -76,7 +76,7 @@ uint16_t parse_port(const char *port_str) {
 			errno = EINVAL;
 		return 0;
 	}
-	return 0;
+	return tmp;
 }
 
 /* Connects to the server's TCP socket listening at the specified address */
@@ -465,7 +465,7 @@ int main(int argc, char **argv) {
 		"\n"
 		"options:\n"
 		"-b\t\tbind to this address (default: all interfaces)\n"
-		"-h,-?\t\tshow this help message and exit\n"
+		"-h\t\tshow this help message and exit\n"
 		"-n\t\tuse negative acknowledgement mode\n"
 		"-p\t\tbind to this port (default: automatically assigned port)\n"
 		"-P\t\tport server is listening on (default: %hu)\n"
