@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <inttypes.h>
+
+#include <getopt.h>
 
 /* Sockets */
 #include <sys/socket.h>
@@ -97,7 +100,7 @@ static int get_tcp_listener(const char *ip_addr, uint16_t port) {
 		return -1;
 	}
 
-	printf("Socket is bound! Waiting for a connection on %s:%hu\n", ip_addr, port);
+	printf("Socket is bound! Waiting for a connection on %s:%"PRIu16"\n", ip_addr, port);
 
 	return fd;
 }
@@ -119,7 +122,7 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 
 	/* See if the blocksize is possible */
 	if (num_blocks > UINT32_MAX) {
-		fprintf(stderr, "Error: a blocksize of %hu is too small.\n", blocksize);
+		fprintf(stderr, "Error: a blocksize of %"PRIu16" is too small.\n", blocksize);
 
 		/* Attempt to get a new blocksize */
 		uint64_t minimum_blocksize = fsize / UINT32_MAX;
@@ -137,8 +140,8 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 		}
 	}
 
-	printf("Using a blocksize of %hu.\n", blocksize);
-	printf("The total number of blocks is %u.\n", (uint32_t)num_blocks);
+	printf("Using a blocksize of %"PRIu16".\n", blocksize);
+	printf("The total number of blocks is %"PRIu64".\n", num_blocks);
 
 	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_DEFAULT,
 		.num_blocks = htonl(num_blocks - 1),
@@ -200,7 +203,7 @@ static void *udp_loop(void *arg) {
 	pthread_mutex_lock(&state->lock);
 
 	while (!(state->status & CLIENT_DONE)) {
-		size_t num_blocks_sent = 0;
+		uint64_t num_blocks_sent = 0;
 		ssize_t num_read, num_sent, block_idx = -1;
 		do {
 			/* Go to the next block index in the file */
@@ -238,7 +241,7 @@ static void *udp_loop(void *arg) {
 
 		} while (num_read == blocksize);
 
-		printf("UDP: Sent %zu blocks to client.\n", num_blocks_sent);
+		printf("UDP: Sent %"PRIu64" blocks to client.\n", num_blocks_sent);
 
 		/* Signal to TCP thread we are done*/
 		state->status |= UDP_FINISHED;
@@ -284,8 +287,6 @@ void tcp_worker(int sock_fd, struct transmit_state *state) {
 
 			/* Receive the control header */
 			len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
-
-			// printf("TCP: ctrl.type = %d\n", ctrl.type);
 
 			if (ctrl.type == COMPLETE) {
 				/* We are done, cleanup */
@@ -386,7 +387,7 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	/* Receive the UDP information packet from the client */
 	recv(client_tcp_fd, &udp_info, sizeof(udp_info), 0);
 
-	printf("Client is listening on port %hu\n\n", ntohs(udp_info.destination_port));
+	printf("Client is listening on port %"PRIu16"\n\n", ntohs(udp_info.destination_port));
 
 	/* Write the UDP port the client is using into the address structure */
 	client_addr.sin_port = udp_info.destination_port;

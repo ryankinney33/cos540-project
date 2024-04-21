@@ -104,7 +104,7 @@ int connect_to_server(const char *ip_addr, uint16_t port) {
 		return -1;
 	}
 
-	printf("TCP: Connecting to %s:%hu\n", ip_addr, port);
+	printf("TCP: Connecting to %s:%"PRIu16"\n", ip_addr, port);
 	if (connect(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
 		perror("TCP: connect");
 		return -1;
@@ -263,7 +263,7 @@ void *udp_loop(void *arg) {
 
 	pthread_mutex_lock(&state->lock);
 	while (!(state->status & FILE_IS_COMPLETE)) {
-		size_t pkt_recvcount = 0;
+		uint64_t pkt_recvcount = 0;
 
 		/* Read blocks and write them to the file */
 		while (!(state->status & UDP_NO_MORE_BLOCKS)) {
@@ -276,7 +276,7 @@ void *udp_loop(void *arg) {
 					pthread_mutex_lock(&state->lock);
 					if (state->status & TCP_DONE_RECEIVED) {
 						state->status |= UDP_NO_MORE_BLOCKS; /* Receive no more blocks */
-						printf("UDP: Received %zu blocks this round.\n", pkt_recvcount);
+						printf("UDP: Received %"PRIu64" blocks this round.\n", pkt_recvcount);
 					}
 					continue;
 				}
@@ -468,7 +468,7 @@ int main(int argc, char **argv) {
 		"-h\t\tshow this help message and exit\n"
 		"-n\t\tuse negative acknowledgement mode\n"
 		"-p\t\tbind to this port (default: automatically assigned port)\n"
-		"-P\t\tport server is listening on (default: %hu)\n"
+		"-P\t\tport server is listening on (default: %"PRIu16")\n"
 		"-s\t\taddress of the server (default: %s)\n"
 		"\n"
 		"The file transmission is completed according to RFC COS540.\n";
