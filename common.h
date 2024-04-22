@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <pthread.h>
 
 #include "packets.h"
 
@@ -46,9 +47,9 @@ static inline bool get_block_status(uint32_t idx, const ACKPacket_t *sack) {
 
 /* Data types used for the threads of the client and server */
 typedef enum WorkerStatus {
-	UDP_DONE = 1 << 0, /* Set when the UDP thread is done receiving/sending blocks */
-	TRANSMISSION_OVER = 1 << 1, /* Set when every block has been received from the server */
-	TCP_DONE_RECEIVED = 1 << 2, /* Set when the TCP thread receives a Complete packet from server */
+	UDP_DONE = 1 << 0, /* Set when the UDP thread is done receiving/sending blocks (client/server) */
+	TRANSMISSION_OVER = 1 << 1, /* Set when every block was successfully transmitted (client/server) */
+	TCP_DONE_RECEIVED = 1 << 2, /* Set when the TCP thread receives a Complete packet from server (client only) */
 } WorkerStatus_t;
 struct transmit_state {
 	pthread_mutex_t lock; /* Avoid race conditions */

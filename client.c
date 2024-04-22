@@ -163,16 +163,15 @@ void *udp_loop(void *arg) {
 
 			if (FD_ISSET(socket_fd, &fdlist)) { /* Check if data was received */
 				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
-
 				pkt_recvcount += 1;
 
-				/* Move file to correct position */
+				/* Extract index from the block and write to file */
 				off_t idx = ntohl(f_block->index);
-
-				lseek(file_fd, idx * block_len, SEEK_SET);
-
-				/* Write the block into the file */
-				write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+				if (!get_block_status(idx, state->sack)) { /* Only change file if this is a new block */
+					/* Set file position and write the block to the file */
+					lseek(file_fd, idx * block_len, SEEK_SET);
+					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+				}
 
 				pthread_mutex_lock(&state->lock);
 				set_block_status(idx, state->sack); /* Mark the block as acquired */
