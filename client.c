@@ -234,7 +234,9 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			continue; /* If unset, then a timeout occurred. Try again */
 
 		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), 0); /* FIXME: error check */
-
+		if (recv_len == -1) {
+			exit(EXIT_FAILURE);
+		}
 
 		if (received_complete.type != COMPLETE) {
 			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
@@ -285,13 +287,12 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 }
 
 /* Prepares and runs the transmission */
-int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind_port, const char *server_addr, uint16_t server_port, bool use_nack, uint16_t expected_blocksize) {
+int run_transmission(const char *file_path, struct sockaddr_in *bind_address, struct sockaddr_in *server_address, bool use_nack, uint16_t expected_blocksize) {
 	/* Packets */
 	FileInformationPacket_t f_info;
 
 	/* Thread state */
 	int err;
-	struct sockaddr_in server_address;
 	pthread_t udp_tid;
 	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
@@ -305,11 +306,10 @@ int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind
 	}
 
 	/* Open a non-blocking UDP socket and bind it to the wanted address */
-	state.udp_socket_fd = get_socket(bind_addr, bind_port, SOCK_DGRAM | SOCK_NONBLOCK);
+	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM | SOCK_NONBLOCK);
 
 	/* Connect to the server */
-	server_address = parse_address(server_addr, server_port);
-	state.tcp_socket_fd = connect_to_server(&server_address);
+	state.tcp_socket_fd = connect_to_server(server_address);
 	if (state.tcp_socket_fd == -1) {
 		return errno;
 	}
@@ -348,7 +348,7 @@ int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind
 
 	/* Initialize UDP connection with server */
 	while(1) {
-		err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)&server_address, sizeof(server_address));
+		err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)server_address, sizeof(*server_address));
 		if (err == -1) {
 			fprintf(stderr, ERRCOLOR "UDP: sendto: %s\x1B[0m\n", strerror(errno));
 			return errno;
@@ -411,6 +411,8 @@ int main(int argc, char **argv) {
 	uint16_t server_port = SRV_TCP_P;
 	uint16_t blocksize = 1024;
 	bool use_nack = false;
+	struct sockaddr_in bind_address;
+	struct sockaddr_in server_address;
 
 	/* Flags for command line argument parsing */
 	int c;
@@ -506,7 +508,19 @@ int main(int argc, char **argv) {
 	}
 	file_path = argv[optind];
 
-	run_transmission(file_path, bind_addr, bind_port, server_addr, server_port, use_nack, blocksize);
+	/* Process the IP addresses */
+	bind_address = parse_address(bind_addr, bind_port);
+	if (errno) {
+		fprintf(stderr, ERRCOLOR "UDP: %s is an incorrectly specified address.\x1B[0m\n", bind_addr);
+		exit(errno);
+	}
+	server_address = parse_address(server_addr, server_port);
+	if (errno) {
+		fprintf(stderr, ERRCOLOR "TCP: %s is an incorrectly specified address.\x1B[0m\n", server_addr);
+		exit(errno);
+	}
+
+	run_transmission(file_path, &bind_address, &server_address, use_nack, blocksize);
 
 	return 0;
 }

@@ -55,9 +55,9 @@ size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
  * Opens a socket and binds it to the address.
  * Returns the file descriptor for the socket.
  */
-int get_socket(const char *ip_addr, uint16_t port, int type) {
+int get_socket(struct sockaddr_in *address, int type) {
 	int fd;
-	struct sockaddr_in address;
+	// struct sockaddr_in address;
 
 	fd = socket(AF_INET, type, 0);
 
@@ -66,9 +66,9 @@ int get_socket(const char *ip_addr, uint16_t port, int type) {
 		return -1;
 	}
 
-	address = parse_address(ip_addr, port);
+	// address = parse_address(ip_addr, port);
 
-	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
+	if (bind(fd, (struct sockaddr*)address, sizeof(*address)) == -1) {
 		fprintf(stderr, ERRCOLOR "bind: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}

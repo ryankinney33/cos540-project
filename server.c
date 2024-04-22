@@ -262,7 +262,7 @@ void tcp_worker(struct transmit_state *state) {
 	pthread_mutex_unlock(&state->lock);
 }
 
-int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind_port) {
+int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 	/* file descriptors */
 	int serv_tcp_fd;
 	// int udp_socket_fd;
@@ -283,7 +283,7 @@ int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind
 	state.file_fd = open(file_path, O_RDONLY); //FIXME: error check this
 
 	// serv_tcp_fd = get_tcp_listener(bind_addr, bind_port);
-	serv_tcp_fd = get_socket(bind_addr, bind_port, SOCK_STREAM);
+	serv_tcp_fd = get_socket(bind_address, SOCK_STREAM);
 	if (serv_tcp_fd == -1) {
 		return errno;
 	}
@@ -298,9 +298,9 @@ int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind
 		perror("listen");
 		return -1;
 	}
-	printf("Waiting for a connection on %s:%"PRIu16"\n", bind_addr, bind_port);
+	printf("Waiting for a connection on %s:%"PRIu16"\n", inet_ntoa(bind_address->sin_addr), ntohs(bind_address->sin_port)); // TODO: change this
 
-	state.udp_socket_fd = get_socket(bind_addr, bind_port, SOCK_DGRAM); // FIXME: error check this
+	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM); // FIXME: error check this
 
 	/* Receive a connection on the socket */
 	state.tcp_socket_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &client_addr_len);
@@ -363,6 +363,7 @@ int main(int argc, char **argv) {
 	const char *file_path = NULL;
 	const char *bind_addr = SRV_TCP_A;
 	uint16_t bind_port = SRV_TCP_P;
+	struct sockaddr_in bind_address;
 
 	/* Flags for command line argument parsing */
 	int c;
@@ -421,7 +422,14 @@ int main(int argc, char **argv) {
 	}
 	file_path = argv[optind];
 
-	run_transmission(file_path, bind_addr, bind_port);
+	/* Process the IP address */
+	bind_address = parse_address(bind_addr, bind_port);
+	if (errno) {
+		fprintf(stderr, ERRCOLOR "TCP: %s is an incorrectly specified address.\x1B[0m\n", bind_addr);
+		exit(errno);
+	}
+
+	run_transmission(file_path, &bind_address);
 
 	return 0;
 }
