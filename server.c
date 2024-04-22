@@ -36,113 +36,9 @@
 
 /* TODO: check ALL header preambles for correctness */
 
-typedef enum WorkerStatus {
-	UDP_FINISHED = 1 << 0, /* Set when the UDP thread is done sending blocks */
-	CLIENT_DONE = 1 << 1, /* Set when the client has received all blocks */
-} WorkerStatus_t;
-
-struct transmit_state {
-	pthread_mutex_t lock;
-	ACKPacket_t *ack_packet;
-	FileBlockPacket_t *f_block;
-	size_t num_blocks;
-	WorkerStatus_t status;
-	int file_fd;
-	int socket_fd;
-	int error_code;
-	uint16_t block_packet_len;
-};
-
-/* Global data */
-static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
-static const UDPReadyPacket_t ready = UDP_READY_INITIALIZER;
-
-
-/*
- * Opens a TCP socket.
- * Returns the file descriptor for the socket.
- */
-static int get_tcp_listener(const char *ip_addr, uint16_t port) {
-	int fd, err;
-	struct sockaddr_in address;
-
-	/* Open the TCP socket */
-	fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd == -1) {
-		perror("socket");
-		return -1;
-	}
-
-	/* Avoid time-wait */
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
-		perror("setsockopt"); /* Not a fatal error... */
-	}
-
-	/* Create address to bind to */
-	address.sin_family = AF_INET;
-	address.sin_port = htons(port);
-	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
-	if (err == 0) {
-		fprintf(stderr, "inet_pton: invalid IP address\n");
-		errno = EINVAL;
-		return -1;
-	} else if (err == -1) {
-		perror("inet_pton");
-		return -1;
-	}
-
-	/* Bind socket to address */
-	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		perror("bind");
-		return -1;
-	}
-
-	/* Set socket to listening mode */
-	if (listen(fd, 1) == -1) {
-		perror("listen");
-		return -1;
-	}
-
-	printf("Socket is bound! Waiting for a connection on %s:%"PRIu16"\n", ip_addr, port);
-
-	return fd;
-}
-
-static int get_udp_socket(const char *ip_addr, uint16_t port) {
-	int fd, err;
-	struct sockaddr_in address;
-
-	fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (fd == -1) {
-		return errno;
-	}
-
-	/* Avoid time-wait */
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
-		perror("setsockopt"); /* Not a fatal error... */
-	}
-
-	/* Create address to bind to */
-	address.sin_family = AF_INET;
-	address.sin_port = htons(port);
-	err = inet_pton(AF_INET, ip_addr, &address.sin_addr);
-	if (err == 0) {
-		fprintf(stderr, "inet_pton: invalid IP address\n");
-		errno = EINVAL;
-		return -1;
-	} else if (err == -1) {
-		perror("inet_pton");
-		return -1;
-	}
-
-	/* Bind socket to address */
-	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		perror("bind");
-		return -1;
-	}
-
-	return fd;
-}
+/*******************************************************************************************/
+/* Private Utility functions                                                               */
+/*******************************************************************************************/
 
 /* Gets the file information */
 FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
@@ -179,8 +75,7 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 		}
 	}
 
-	printf("Using a blocksize of %"PRIu16".\n", blocksize);
-	printf("The total number of blocks is %"PRIu64".\n", num_blocks);
+	printf("The file contains %"PRIu64" blocks of %"PRIu16" bytes.\n", num_blocks, blocksize);
 
 	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_DEFAULT,
 		.num_blocks = htonl(num_blocks - 1),
@@ -224,8 +119,8 @@ static void *udp_loop(void *arg) {
 
 	FileBlockPacket_t *send_buf = state->f_block;
 	const size_t num_blocks = state->num_blocks;
-	int file_fd = state->file_fd;
-	int socket_fd = state->socket_fd;
+	const int file_fd = state->file_fd;
+	const int socket_fd = state->udp_socket_fd;
 	const uint16_t blocksize = state->block_packet_len - sizeof(FileBlockPacket_t);
 	int *error_code = &state->error_code;
 
@@ -234,17 +129,17 @@ static void *udp_loop(void *arg) {
 	/* Acquire the lock */
 	pthread_mutex_lock(&state->lock);
 
-	while (!(state->status & CLIENT_DONE)) {
+	while (!(state->status & TRANSMISSION_OVER)) {
 		uint64_t num_blocks_sent = 0;
 		ssize_t num_read, num_sent, block_idx = -1;
 		do {
 			/* Go to the next block index in the file */
-			block_idx = get_next_index(block_idx, state->ack_packet, num_blocks);
+			block_idx = get_next_index(block_idx, state->sack, num_blocks);
 			if (block_idx == -1) {
 				break; /* Invalid index, we are done */
 			}
 
-			if (state->ack_packet != NULL)
+			if (state->sack != NULL)
 				lseek(file_fd, blocksize * block_idx, SEEK_SET);
 
 			/* This automatically handles the size of the final block */
@@ -252,7 +147,7 @@ static void *udp_loop(void *arg) {
 			if (num_read == -1) {
 				/* Error occurred! */
 				perror("UDP: read");
-				state->status |= UDP_FINISHED;
+				state->status |= UDP_DONE;
 				*error_code = errno;
 				return NULL;
 			} else if (num_read == 0) {
@@ -266,7 +161,7 @@ static void *udp_loop(void *arg) {
 			num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
 			if (num_sent == -1) {
 				perror("UDP: send");
-				state->status |= UDP_FINISHED;
+				state->status |= UDP_DONE;
 				return NULL;
 			}
 			num_blocks_sent += 1;
@@ -276,14 +171,14 @@ static void *udp_loop(void *arg) {
 		printf("UDP: Sent %"PRIu64" blocks to client.\n", num_blocks_sent);
 
 		/* Signal to TCP thread we are done*/
-		state->status |= UDP_FINISHED;
+		state->status |= UDP_DONE;
 		pthread_mutex_unlock(&state->lock);
 		sched_yield(); /* Allow TCP thread to execute */
 
 		/* Wait for TCP thread to finish */
 		while(1) {
 			pthread_mutex_lock(&state->lock); /* Will keep the lock until next transmission is over */
-			if (state->status & UDP_FINISHED) {
+			if (state->status & UDP_DONE) {
 				pthread_mutex_unlock(&state->lock);
 				sched_yield();
 			} else {
@@ -296,19 +191,21 @@ static void *udp_loop(void *arg) {
 	return NULL;
 }
 
-void tcp_worker(int sock_fd, struct transmit_state *state) {
+void tcp_worker(struct transmit_state *state) {
 	ssize_t len;
 	ControlHeader_t ctrl;
 	uint32_t ack_stream_length = 0;
 	size_t ack_pkt_len = 0;
+
+	const int sock_fd = state->tcp_socket_fd;
 
 	printf("TCP: Starting up...\n");
 
 	while(1) {
 		/* Check the state */
 		pthread_mutex_lock(&state->lock);
-		if (state->status & UDP_FINISHED) { /* Check if UDP thread is finished */
-			free(state->ack_packet); /* Done with the ACK, free it */
+		if (state->status & UDP_DONE) { /* Check if UDP thread is finished */
+			free(state->sack); /* Done with the ACK, free it */
 
 			/* Send the Complete packet */
 			len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
@@ -338,67 +235,76 @@ void tcp_worker(int sock_fd, struct transmit_state *state) {
 
 			/* Allocate and copy information into the ACK packet */
 			ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
-			state->ack_packet = malloc(ack_pkt_len); /* FIXME: error check this */
+			state->sack = malloc(ack_pkt_len); /* FIXME: error check this */
 
-			state->ack_packet->header = ctrl;
-			state->ack_packet->length = ack_stream_length;
+			state->sack->header = ctrl;
+			state->sack->length = ack_stream_length;
 
 			/* Receive the ACK stream and write it to the ACK packet */
-			len = recv(sock_fd, state->ack_packet->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+			len = recv(sock_fd, state->sack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
 
 			/* Convert the packet fields to host order (if NACK) */
-			if (state->ack_packet->header.type == NACK) {
+			if (state->sack->header.type == NACK) {
 				for (size_t i = 0; i <= ack_stream_length; ++i) {
-					state->ack_packet->ack_stream[i] = ntohl(state->ack_packet->ack_stream[i]);
+					state->sack->ack_stream[i] = ntohl(state->sack->ack_stream[i]);
 				}
 			}
 
 			/* Signal to UDP thread to begin */
-			state->status &= ~UDP_FINISHED;
+			state->status &= ~UDP_DONE;
 		}
 		pthread_mutex_unlock(&state->lock);
 		sched_yield(); /* Let the UDP thread execute */
 	}
 
 	/* We are done, tell UDP to finish up and exit */
-	state->status = CLIENT_DONE;
+	state->status = TRANSMISSION_OVER;
 	pthread_mutex_unlock(&state->lock);
 }
 
-int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_t tcp_listen_port) {
+int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind_port) {
 	/* file descriptors */
 	int serv_tcp_fd;
-	int client_tcp_fd;
-	int client_udp_fd;
-	int local_file_fd;
+	// int udp_socket_fd;
 
 	/* Packets */
 	FileInformationPacket_t f_info;
-	// UDPInformationPacket_t udp_info;
-	FileBlockPacket_t *block;
 
 	/* IP address of connected  client */
 	struct sockaddr_in client_addr;
 	socklen_t client_addr_len = sizeof(client_addr);
 
 	/* Thread state */
-	uint16_t blocksize, packet_len;
+	uint16_t blocksize;
 	pthread_t udp_tid;
-	struct transmit_state state = {.ack_packet=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
+	struct transmit_state state = {.sack=NULL, .lock=PTHREAD_MUTEX_INITIALIZER};
 
 	/* Open the file being transferred and build file info packet */
-	local_file_fd = open(file_path, O_RDONLY); //FIXME: error check this
+	state.file_fd = open(file_path, O_RDONLY); //FIXME: error check this
 
-	serv_tcp_fd = get_tcp_listener(tcp_listen_addr, tcp_listen_port);
+	// serv_tcp_fd = get_tcp_listener(bind_addr, bind_port);
+	serv_tcp_fd = get_socket(bind_addr, bind_port, SOCK_STREAM);
 	if (serv_tcp_fd == -1) {
 		return errno;
 	}
 
-	client_udp_fd = get_udp_socket(tcp_listen_addr, tcp_listen_port);
+	/* Avoid time-wait state on the server socket */
+	if (setsockopt(serv_tcp_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
+		perror("setsockopt"); /* Not a fatal error... */
+	}
+
+	/* Set socket to listening mode */
+	if (listen(serv_tcp_fd, 1) == -1) {
+		perror("listen");
+		return -1;
+	}
+	printf("Waiting for a connection on %s:%"PRIu16"\n", bind_addr, bind_port);
+
+	state.udp_socket_fd = get_socket(bind_addr, bind_port, SOCK_DGRAM); // FIXME: error check this
 
 	/* Receive a connection on the socket */
-	client_tcp_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &client_addr_len);
-	if (client_tcp_fd == -1) {
+	state.tcp_socket_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &client_addr_len);
+	if (state.tcp_socket_fd == -1) {
 		perror("accept");
 		return errno;
 	}
@@ -411,35 +317,30 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	}
 
 	/* Get the wanted blocksize from the client */
-	recv(client_tcp_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
+	recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
 	blocksize = ntohs(f_info.blocksize) + 1;
 
 	/* Build the file information packet with the file size and true blocksize */
-	f_info = get_fileinfo(local_file_fd, blocksize);
+	f_info = get_fileinfo(state.file_fd, blocksize);
 
 	/* Send the file information packet to the client */
-	send(client_tcp_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this
+	send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this
 
 	/* Receive the UDP information from the client */
-	recvfrom(client_udp_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len); //FIXME: error check this
-	send(client_tcp_fd, &ready, sizeof(ready), 0); //FIXME: error check this
-	printf("Client is listening on port %"PRIu16"\n\n", ntohs(client_addr.sin_port));
+	recvfrom(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len); //FIXME: error check this
+	send(state.tcp_socket_fd, &ready, sizeof(ready), 0); //FIXME: error check this
+	// printf("Client is listening on port %"PRIu16"\n\n", ntohs(client_addr.sin_port));
 
 	/* Connect to client UDP socket, so we can use send() instead of sendto(), and store less state information */
-	if (connect(client_udp_fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
+	if (connect(state.udp_socket_fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
 		perror("connect");
 		return errno; /* TODO: cleanup */
 	}
 
-	packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
-	block = malloc(packet_len);
-
-	state.f_block = block;
+	state.block_packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
+	state.f_block = malloc(state.block_packet_len); // FIXME: error check this
 	state.num_blocks = ntohl(f_info.num_blocks) + 1;
-	state.file_fd = local_file_fd;
-	state.socket_fd = client_udp_fd;
 	state.error_code = 0;
-	state.block_packet_len = packet_len;
 
 	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err == -1) {
@@ -448,12 +349,12 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	}
 	pthread_detach(udp_tid);
 
-	tcp_worker(client_tcp_fd, &state);
+	tcp_worker(&state);
 
-	close(client_tcp_fd);
-	close(client_udp_fd);
+	close(state.tcp_socket_fd);
+	close(state.udp_socket_fd);
 	close(serv_tcp_fd);
-	close(local_file_fd);
+	close(state.file_fd);
 
 	return 0;
 }

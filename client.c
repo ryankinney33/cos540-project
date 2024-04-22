@@ -37,43 +37,17 @@
 // #define CLI_TCP_A   "0.0.0.0"
 // #define CLI_TCP_P   27021
 
-#define TCPCOLOR "\x1B[1m"
-#define UDPCOLOR "\x1B[33m"
-#define ERRCOLOR "\x1B[1;31m"
-
 /* TODO: check ALL header preambles for correctness */
 
-typedef enum WorkerStatus {
-	TCP_DONE_RECEIVED = 1 << 0, /* Set when the TCP thread receives a Complete packet from server */
-	UDP_NO_MORE_BLOCKS = 1 << 1, /* Set when the UDP thread is done receiving blocks */
-	FILE_IS_COMPLETE = 1 << 2 /* Set when every block has been received from the server */
-} WorkerStatus_t;
-
-struct transmit_state {
-	pthread_mutex_t lock;
-	ACKPacket_t *sack;
-	FileBlockPacket_t *f_block;
-	size_t num_blocks;
-	int file_fd;
-	int tcp_socket_fd;
-	int udp_socket_fd;
-	int error_code;
-	WorkerStatus_t status;
-	uint16_t block_packet_len;
-};
-
-/* Global data */
-static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
-
 /*******************************************************************************************/
-/* Utility functions                                                                       */
+/* Private Utility functions                                                               */
 /*******************************************************************************************/
 
 /* Connects to the server's TCP socket listening at the specified address */
-int connect_to_server(struct sockaddr_in *address) {
+static int connect_to_server(struct sockaddr_in *address) {
 	int fd;
 
-	/* Open the TCP socket (nonblocking) */
+	/* Open the TCP socket */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd == -1) {
 		fprintf(stderr, ERRCOLOR "TCP: socket: %s\x1B[0m\n", strerror(errno));
@@ -91,36 +65,11 @@ int connect_to_server(struct sockaddr_in *address) {
 }
 
 /*
- * Opens a UDP socket to receive data from the server.
- * Returns the file descriptor for the socket.
- */
-int get_udp_listener(const char *ip_addr, uint16_t port) {
-	int fd;
-	struct sockaddr_in address;
-
-	/* Open the UDP socket (nonblocking) */
-	fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
-	if (fd == -1) {
-		fprintf(stderr, ERRCOLOR "UDP: socket: %s\x1B[0m\n", strerror(errno));
-		return -1;
-	}
-
-	address = parse_address(ip_addr, port);
-
-	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		fprintf(stderr, ERRCOLOR "UDP: bind: %s\x1B[0m\n", strerror(errno));
-		return -1;
-	}
-
-	return fd;
-}
-
-/*
  * Scans the block_status buffer and builds an ACK packet.
  * Returns NULL if all blocks were received or on error.
  * If error, errno will be set to the source of error
  */
-ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_t num_blocks) {
+static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_t num_blocks) {
 	ACKPacket_t *pkt = NULL;
 	size_t ack_stream_len;
 
@@ -149,7 +98,7 @@ ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_t num_b
 			uint32_t sack_idx = 0, pkt_idx = 0;
 			while (pkt_idx < ack_stream_len && sack_idx < num_blocks) {
 				if (sack->ack_stream[sack_idx / 32] == UINT32_MAX) {
-					sack_idx += 32; /* Move to next word*/
+					sack_idx += 32; /* Move to next word */
 				} else {
 					if (!get_block_status(sack_idx, sack)) { /* Is the block missing? */
 						pkt->ack_stream[pkt_idx++] = htonl(sack_idx);
@@ -188,12 +137,12 @@ void *udp_loop(void *arg) {
 	printf(UDPCOLOR "UDP: Ready to receive blocks.\x1B[0m\n");
 
 	pthread_mutex_lock(&state->lock);
-	while (!(state->status & FILE_IS_COMPLETE)) {
+	while (!(state->status & TRANSMISSION_OVER)) {
 		uint64_t pkt_recvcount = 0;
 		bool round_occurred = false;
 
 		/* Read blocks and write them to the file */
-		while (!(state->status & UDP_NO_MORE_BLOCKS)) {
+		while (!(state->status & UDP_DONE)) {
 			pthread_mutex_unlock(&state->lock);
 			round_occurred = true;
 
@@ -231,7 +180,7 @@ void *udp_loop(void *arg) {
 				/* Check if the TCP thread has flagged completion */
 				pthread_mutex_lock(&state->lock);
 				if (state->status & TCP_DONE_RECEIVED) {
-					state->status |= UDP_NO_MORE_BLOCKS; /* Receive no more blocks */
+					state->status |= UDP_DONE; /* Receive no more blocks */
 					printf(UDPCOLOR "UDP: Received %"PRIu64" blocks this round.\x1B[0m\n", pkt_recvcount);
 				}
 				continue;
@@ -283,7 +232,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 		}
 
 		if (!FD_ISSET(sock_fd, &fdlist))
-			continue; /* If unset, then a timeout occurred. Try again*/
+			continue; /* If unset, then a timeout occurred. Try again */
 
 		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), 0); /* FIXME: error check */
 
@@ -304,14 +253,14 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			pthread_mutex_unlock(&state->lock);
 			sched_yield(); /* Allow the UDP thread to work */
 			pthread_mutex_lock(&state->lock);
-		} while (!(state->status & UDP_NO_MORE_BLOCKS));
+		} while (!(state->status & UDP_DONE));
 
 		/* Build the ACK packet */
 		ack_pkt = build_ACK_packet(use_nack, state->sack, state->num_blocks);
 		if (ack_pkt == NULL) { /* Check if the transmission is complete */
 			/* Send the complete message to the server */
 			send(sock_fd, &done, sizeof(done), 0);
-			state->status |= FILE_IS_COMPLETE;
+			state->status |= TRANSMISSION_OVER;
 			pthread_mutex_unlock(&state->lock);
 			printf(TCPCOLOR "TCP: All blocks received. Cleaning up...\x1B[0m\n");
 			return;
@@ -321,7 +270,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
 			if (err == -1) {
 				fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
-				state->status |= FILE_IS_COMPLETE;
+				state->status |= TRANSMISSION_OVER;
 				return;
 			}
 
@@ -330,14 +279,14 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			}
 
 			/* Signal to the UDP thread to begin another round */
-			state->status &= ~(UDP_NO_MORE_BLOCKS | TCP_DONE_RECEIVED);
+			state->status &= ~(UDP_DONE | TCP_DONE_RECEIVED);
 			pthread_mutex_unlock(&state->lock);
 		}
 	}
 }
 
 /* Prepares and runs the transmission */
-int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_t udp_port, const char *server_addr, uint16_t server_port, bool use_nack, uint16_t expected_blocksize) {
+int run_transmission(const char *file_path, const char *bind_addr, uint16_t bind_port, const char *server_addr, uint16_t server_port, bool use_nack, uint16_t expected_blocksize) {
 	/* Packets */
 	FileInformationPacket_t f_info;
 
@@ -356,8 +305,8 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 		return errno;
 	}
 
-	/* Open the UDP socket */
-	state.udp_socket_fd = get_udp_listener(udp_listen_addr, udp_port);
+	/* Open a non-blocking UDP socket and bind it to the wanted address */
+	state.udp_socket_fd = get_socket(bind_addr, bind_port, SOCK_DGRAM | SOCK_NONBLOCK);
 
 	/* Connect to the server */
 	server_address = parse_address(server_addr, server_port);
@@ -457,9 +406,9 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 /* Process command line arguments and begin transmission */
 int main(int argc, char **argv) {
 	const char *file_path = NULL;
-	const char *udp_listen_addr = CLI_UDP_A;
+	const char *bind_addr = CLI_UDP_A;
 	const char *server_addr = SRV_TCP_A;
-	uint16_t udp_port = CLI_UDP_P;
+	uint16_t bind_port = CLI_UDP_P;
 	uint16_t server_port = SRV_TCP_P;
 	uint16_t blocksize = 1024;
 	bool use_nack = false;
@@ -490,7 +439,7 @@ int main(int argc, char **argv) {
 				fprintf(stderr, "%s: warning: bind address specified multiple times.\n", argv[0]);
 			} else {
 				bflag = true;
-				udp_listen_addr = optarg;
+				bind_addr = optarg;
 			}
 			break;
 		case 'c':
@@ -515,7 +464,7 @@ int main(int argc, char **argv) {
 				fprintf(stderr, "%s: warning: binding port specified multiple times.\n", argv[0]);
 			} else {
 				pflag = true;
-				udp_port = parse_port(optarg);
+				bind_port = parse_port(optarg);
 				if (errno) {
 					fprintf(stderr, "%s: error: invalid port specification: %s\n", argv[0], optarg);
 				}
@@ -558,7 +507,7 @@ int main(int argc, char **argv) {
 	}
 	file_path = argv[optind];
 
-	run_transmission(file_path, udp_listen_addr, udp_port, server_addr, server_port, use_nack, blocksize);
+	run_transmission(file_path, bind_addr, bind_port, server_addr, server_port, use_nack, blocksize);
 
 	return 0;
 }
