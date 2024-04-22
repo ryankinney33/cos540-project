@@ -426,7 +426,7 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	send(client_tcp_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this
 
 	/* Receive the UDP information from the client */
-	recvfrom(client_udp_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len);
+	recvfrom(client_udp_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len); //FIXME: error check this
 	send(client_tcp_fd, &ready, sizeof(ready), 0); //FIXME: error check this
 	printf("Client is listening on port %"PRIu16"\n\n", ntohs(client_addr.sin_port));
 
