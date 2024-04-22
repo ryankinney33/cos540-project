@@ -241,7 +241,7 @@ void tcp_worker(struct transmit_state *state) {
 			state->sack->length = ack_stream_length;
 
 			/* Receive the ACK stream and write it to the ACK packet */
-			len = recv(sock_fd, state->sack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), 0);
+			len = recv(sock_fd, state->sack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), MSG_WAITALL);
 
 			/* Convert the packet fields to host order (if NACK) */
 			if (state->sack->header.type == NACK) {
