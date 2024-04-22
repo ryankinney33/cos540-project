@@ -36,6 +36,10 @@
 // #define CLI_TCP_A   "0.0.0.0"
 // #define CLI_TCP_P   27021
 
+#define TCPCOLOR "\x1B[1m"
+#define UDPCOLOR "\x1B[33m"
+#define ERRCOLOR "\x1B[1;31m"
+
 /* TODO: check ALL header preambles for correctness */
 
 typedef enum WorkerStatus {
@@ -103,19 +107,20 @@ struct sockaddr_in parse_address(const char *ip_address, uint16_t port) {
 int connect_to_server(struct sockaddr_in *address) {
 	int fd;
 
-	/* Open the TCP socket */
+	/* Open the TCP socket (nonblocking) */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd == -1) {
-		fprintf(stderr, "\x1B[1;31mTCP: socket: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, ERRCOLOR "TCP: socket: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}
 
-	// printf("TCP: Connecting to %s:%"PRIu16"\n", ip_addr, port);
+	printf(TCPCOLOR "TCP: Connecting to %s:%"PRIu16"\x1B[0m\n", inet_ntoa(address->sin_addr), ntohs(address->sin_port)); // TODO: change this
 	if (connect(fd, (struct sockaddr *)address, sizeof(*address)) == -1) {
-		fprintf(stderr, "\x1B[1;31mTCP: connect: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, ERRCOLOR "TCP: connect: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}
-	printf("\x1B[33mTCP: Connection successful.\x1B[0m\n");
+
+	printf(TCPCOLOR "TCP: Connection successful.\x1B[0m\n");
 	return fd;
 }
 
@@ -130,14 +135,14 @@ int get_udp_listener(const char *ip_addr, uint16_t port) {
 	/* Open the UDP socket (nonblocking) */
 	fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
 	if (fd == -1) {
-		fprintf(stderr, "\x1B[1;31mUDP: socket: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, ERRCOLOR "UDP: socket: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}
 
 	address = parse_address(ip_addr, port);
 
 	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		fprintf(stderr, "\x1B[1;31mUDP: bind: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, ERRCOLOR "UDP: bind: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}
 
@@ -240,7 +245,7 @@ void *udp_loop(void *arg) {
 	const uint16_t block_packet_len = state->block_packet_len;
 	const uint16_t block_len = block_packet_len - sizeof(FileBlockPacket_t);
 
-	printf("\x1B[32mUDP: Ready to receive blocks.\x1B[0m\n");
+	printf(UDPCOLOR "UDP: Ready to receive blocks.\x1B[0m\n");
 
 	pthread_mutex_lock(&state->lock);
 	while (!(state->status & FILE_IS_COMPLETE)) {
@@ -260,14 +265,14 @@ void *udp_loop(void *arg) {
 			timeout.tv_usec = 5000;
 
 			FD_ZERO(&fdlist);
-			FD_SET(state->udp_socket_fd, &fdlist);
+			FD_SET(socket_fd, &fdlist);
 
-			if (select(state->udp_socket_fd + 1, &fdlist, NULL, NULL, &timeout) == -1) { /* I think one thread using select/poll/epoll on two sockets would make this project way easier */
-				fprintf(stderr, "\x1B[1;31mUDP: select: %s\x1B[0m\n", strerror(errno));
+			if (select(socket_fd + 1, &fdlist, NULL, NULL, &timeout) == -1) { /* I think one thread using select/poll/epoll on two sockets would make this project way easier */
+				fprintf(stderr, ERRCOLOR "UDP: select: %s\x1B[0m\n", strerror(errno));
 				exit(errno); /* FIXME: better error checking */
 			}
 
-			if (FD_ISSET(state->udp_socket_fd, &fdlist)) { /* Check if data was received */
+			if (FD_ISSET(socket_fd, &fdlist)) { /* Check if data was received */
 				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
 
 				pkt_recvcount += 1;
@@ -287,7 +292,7 @@ void *udp_loop(void *arg) {
 				pthread_mutex_lock(&state->lock);
 				if (state->status & TCP_DONE_RECEIVED) {
 					state->status |= UDP_NO_MORE_BLOCKS; /* Receive no more blocks */
-					printf("\x1B[32mUDP: Received %"PRIu64" blocks this round.\x1B[0m\n", pkt_recvcount);
+					printf(UDPCOLOR "UDP: Received %"PRIu64" blocks this round.\x1B[0m\n", pkt_recvcount);
 				}
 				continue;
 			}
@@ -297,7 +302,7 @@ void *udp_loop(void *arg) {
 			successive_zeros += 1;
 
 			if (successive_zeros >= 10) {
-				fprintf(stderr, "\x1B[1;31mUDP: 10 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
+				fprintf(stderr, ERRCOLOR "UDP: 10 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
 				exit(EXIT_FAILURE);
 			}
 		} else if (round_occurred) {
@@ -321,20 +326,34 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 	const int sock_fd = state->tcp_socket_fd;
 
 	while(1) {
-		/* Receive the Complete message from the server (nonblocking) */
-		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_DONTWAIT); /* FIXME: error check */
-		if (recv_len == -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				continue;
-			}
+		/* Receive the Complete message from the server */
+		struct timeval timeout;
+		fd_set fdlist;
+
+		/* Set 50 ms timeout */
+		timeout.tv_sec = 0;
+		timeout.tv_usec = 50000;
+
+		FD_ZERO(&fdlist);
+		FD_SET(sock_fd, &fdlist);
+
+		if (select(sock_fd + 1, &fdlist, NULL, NULL, &timeout) == -1) {
+			fprintf(stderr, ERRCOLOR "TCP: select: %s\x1B[0m\n", strerror(errno));
+			exit(errno);
 		}
+
+		if (!FD_ISSET(sock_fd, &fdlist))
+			continue; /* If unset, then a timeout occurred. Try again*/
+
+		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), 0); /* FIXME: error check */
+
 
 		if (received_complete.type != COMPLETE) {
 			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
 			exit(EXIT_FAILURE);
 		}
 
-		printf("\x1B[33mTCP: Received \"Complete\" packet from server.\x1B[0m\n");
+		printf(TCPCOLOR "TCP: Received \"Complete\" packet from server.\x1B[0m\n");
 
 		/* Update the state */
 		pthread_mutex_lock(&state->lock);
@@ -354,14 +373,14 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			send(sock_fd, &done, sizeof(done), 0);
 			state->status |= FILE_IS_COMPLETE;
 			pthread_mutex_unlock(&state->lock);
-			printf("\x1B[33mTCP: All blocks received. Cleaning up...\x1B[0m\n");
+			printf(TCPCOLOR "TCP: All blocks received. Cleaning up...\x1B[0m\n");
 			return;
 		} else { /* The transmission continues */
-			printf("\x1B[33mTCP: Sending a %s mode ACK packet to the server.\x1B[0m\n", use_nack ? "Negative" : "Selective");
+			printf(TCPCOLOR "TCP: Sending a %s mode ACK packet to the server.\x1B[0m\n", use_nack ? "Negative" : "Selective");
 			size_t len = sizeof(*ack_pkt) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
 			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
 			if (err == -1) {
-				fprintf(stderr, "\x1B[1;31mTCP: send: %s\x1B[0m\n", strerror(errno));
+				fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
 				state->status |= FILE_IS_COMPLETE;
 				return;
 			}
@@ -437,13 +456,13 @@ int run_transmission(const char *file_path, const char *udp_listen_addr, uint16_
 	state.sack->header.type = SACK;
 	state.sack->length = htonl(block_status_word_len - 1);
 
-	printf("\x1B[33mTCP: The file contains %zu blocks of %zu bytes.\n\x1B[0m", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
+	printf(TCPCOLOR "TCP: The file contains %zu blocks of %zu bytes.\n\x1B[0m", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
 
 	/* Initialize UDP connection with server */
 	while(1) {
 		err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)&server_address, sizeof(server_address));
 		if (err == -1) {
-			fprintf(stderr, "\x1B[1;31mUDP: sendto: %s\x1B[0m\n", strerror(errno));
+			fprintf(stderr, ERRCOLOR "UDP: sendto: %s\x1B[0m\n", strerror(errno));
 			return errno;
 		}
 
