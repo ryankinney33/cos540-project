@@ -4,8 +4,8 @@ LDLIBS := -lpthread
 .PHONY: all clean
 all: server client
 
-server: server.o
-client: client.o
+server: server.o common.o
+client: client.o common.o
 
 clean:
-	$(RM) server server.o client client.o
+	$(RM) server server.o client client.o common.o

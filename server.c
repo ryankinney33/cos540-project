@@ -22,8 +22,9 @@
 #include <pthread.h>
 
 #include "packets.h"
+#include "common.h"
 
-/* Default IP address. Will be overrideable by command line arguments. */
+/* Default IP address. Overrideable via command line arguments. */
 #define SRV_TCP_A   "0.0.0.0"
 #define SRV_TCP_P   8888
 
@@ -56,21 +57,6 @@ struct transmit_state {
 static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 static const UDPReadyPacket_t ready = UDP_READY_INITIALIZER;
 
-/*
- * Extracts and validates the port number stored in a string.
- * Returns 0 and updates errno on error.
- */
-uint16_t parse_port(const char *port_str) {
-	errno = 0;
-	char *ptr;
-	unsigned long tmp = strtoul(port_str, &ptr, 0);
-	if (errno || *ptr || tmp > UINT16_MAX) {
-		if (!errno)
-			errno = EINVAL;
-		return 0;
-	}
-	return tmp;
-}
 
 /*
  * Opens a TCP socket.
@@ -202,13 +188,6 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	pkt.header.type = FILEINFO;
 
 	return pkt;
-}
-
-/* Gets the flag for the block at idx */
-static inline bool get_block_status(uint32_t idx, ACKPacket_t *pkt) {
-	/* idx / 32 gives word position */
-	/* idx % 32 gives bit position */
-	return ((pkt->ack_stream[idx / 32] & (1 << idx % 32)) != 0);
 }
 
 /*
