@@ -542,14 +542,12 @@ int main(int argc, char **argv) {
 		"\n"
 		"The file transmission is completed according to RFC COS540.\n";
 
-	argv[0] = argv[0];
-
 	/* Process command line arguments*/
 	while ((c = getopt(argc, argv, "b:c:hnp:P:s:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (bflag) {
-				fprintf(stderr, "%s: warning: bind address specified multiple times\n", argv[0]);
+				fprintf(stderr, "%s: warning: bind address specified multiple times.\n", argv[0]);
 			} else {
 				bflag = true;
 				udp_listen_addr = optarg;
@@ -567,7 +565,7 @@ int main(int argc, char **argv) {
 			}
 			break;
 		case 'h':
-			fprintf(stderr, usage, argv[0], SRV_TCP_P, SRV_TCP_A);
+			printf(usage, argv[0], SRV_TCP_P, SRV_TCP_A);
 			return 0;
 		case 'n':
 			use_nack = true;

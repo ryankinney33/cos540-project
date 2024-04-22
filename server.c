@@ -57,6 +57,22 @@ static const CompletePacket_t done = CONTROL_HEADER_DEFAULT;
 static const UDPReadyPacket_t ready = UDP_READY_INITIALIZER;
 
 /*
+ * Extracts and validates the port number stored in a string.
+ * Returns 0 and updates errno on error.
+ */
+uint16_t parse_port(const char *port_str) {
+	errno = 0;
+	char *ptr;
+	unsigned long tmp = strtoul(port_str, &ptr, 0);
+	if (errno || *ptr || tmp > UINT16_MAX) {
+		if (!errno)
+			errno = EINVAL;
+		return 0;
+	}
+	return tmp;
+}
+
+/*
  * Opens a TCP socket.
  * Returns the file descriptor for the socket.
  */
@@ -463,10 +479,69 @@ int run_transmission(const char *file_path, const char *tcp_listen_addr, uint16_
 	return 0;
 }
 
-int main() {
+int main(int argc, char **argv) {
+	const char *file_path = NULL;
+	const char *bind_addr = SRV_TCP_A;
+	uint16_t bind_port = SRV_TCP_P;
+
+	/* Flags for command line argument parsing */
+	int c;
+	bool bflag = false, pflag = false;
+
+	static const char usage[] =
+		"Usage %s [OPTION]... FILE\n"
+		"Reference server implementation of the PDP-11 for the COS 540 Project.\n"
+		"\n"
+		"options:\n"
+		"-b\t\tbind to this address (default: all interface)\n"
+		"-h\t\tshow this help message and exit\n"
+		"-p\t\tbind to this port (default %"PRIu16")\n"
+		"\n"
+		"The file transmission is completed according to RFC COS540.\n";
+
+	/* Process command line arguments */
+	while ((c = getopt(argc, argv, "b:hp:")) != -1) {
+		switch(c) {
+		case 'b':
+			if (bflag) {
+				fprintf(stderr, "%s: warning: bing address specified multiple times.\n", argv[0]);
+			} else {
+				bflag = true;
+				bind_addr = optarg;
+			}
+			break;
+		case 'h':
+			printf(usage, argv[0], SRV_TCP_P);
+			return 0;
+		case 'p':
+			if (pflag) {
+				fprintf(stderr, "%s: warning: binding port specified multiple times.\n", argv[0]);
+			} else {
+				pflag = true;
+				bind_port = parse_port(optarg);
+				if (errno) {
+					fprintf(stderr, "%s: error: invalid port specification: %s\n", argv[0], optarg);
+				}
+			}
+			break;
+		case '?':
+			fprintf(stderr, "Try '%s -h' for more information.\n", argv[0]);
+		default:
+			break;
+		}
+	}
 
 
-	run_transmission("RFC.txt", SRV_TCP_A, SRV_TCP_P);
+	/* Pull the file name */
+	if (optind == argc) {
+		fprintf(stderr, "%s: error, no file specified.\n"
+		                "You have to specify the input file name.\n"
+				"Try '%s -h' for more information.\n", argv[0], argv[0]);
+		return 1;
+	}
+	file_path = argv[optind];
+
+	run_transmission(file_path, bind_addr, bind_port);
 
 	return 0;
 }
