@@ -124,8 +124,9 @@ void *udp_loop(void *arg) {
 	ssize_t read_len;
 	int8_t successive_zeros = 0; /* Counts up when a round with 0 blocks occurs */
 
-
 	struct transmit_state *state = (struct transmit_state*)arg;
+
+	const uint64_t interval = state->num_blocks / 5;
 
 	/* Extract the values from the argument */
 	const int file_fd = state->file_fd;
@@ -171,6 +172,11 @@ void *udp_loop(void *arg) {
 					/* Set file position and write the block to the file */
 					lseek(file_fd, idx * block_len, SEEK_SET);
 					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+
+					if (interval && (pkt_recvcount % interval == 0)) {
+						printf(UDPCOLOR "UDP: Received %"PRIu64" packets so far this round.\x1B[0m\n", pkt_recvcount);
+					}
+
 				}
 
 				pthread_mutex_lock(&state->lock);
@@ -243,7 +249,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			exit(EXIT_FAILURE);
 		}
 
-		printf(TCPCOLOR "TCP: Received \"Complete\" packet from server.\x1B[0m\n");
+		printf(TCPCOLOR "TCP: Received \"Complete\" packet from server.\x1B[0m\x1B[0K\n");
 
 		/* Update the state */
 		pthread_mutex_lock(&state->lock);
