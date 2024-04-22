@@ -30,10 +30,10 @@ struct sockaddr_in parse_address(const char *ip_address, uint16_t port) {
 	address.sin_port = htons(port);
 	err = inet_pton(AF_INET, ip_address, &address.sin_addr);
 	if (err == 0) {
-		fprintf(stderr, "inet_pton: invalid IP address\n");
+		fprintf(stderr, ERRCOLOR "inet_pton: invalid IP address\n");
 		errno = EINVAL;
 	} else if (err == -1) {
-		perror("inet_pton");
+		perror(ERRCOLOR "inet_pton");
 	}
 
 	return address;
@@ -62,14 +62,14 @@ int get_socket(const char *ip_addr, uint16_t port, int type) {
 	fd = socket(AF_INET, type, 0);
 
 	if (fd == -1) {
-		fprintf(stderr, ERRCOLOR "UDP: socket: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, ERRCOLOR "socket: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}
 
 	address = parse_address(ip_addr, port);
 
 	if (bind(fd, (struct sockaddr*)&address, sizeof(address)) == -1) {
-		fprintf(stderr, ERRCOLOR "UDP: bind: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, ERRCOLOR "bind: %s\x1B[0m\n", strerror(errno));
 		return -1;
 	}
 

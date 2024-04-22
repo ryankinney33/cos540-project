@@ -54,7 +54,7 @@ static int connect_to_server(struct sockaddr_in *address) {
 		return -1;
 	}
 
-	printf(TCPCOLOR "TCP: Connecting to %s:%"PRIu16"\x1B[0m\n", inet_ntoa(address->sin_addr), ntohs(address->sin_port)); // TODO: change this
+	printf(TCPCOLOR "TCP: Connecting to %s:%"PRIu16"...\x1B[0m\n", inet_ntoa(address->sin_addr), ntohs(address->sin_port)); // TODO: change this
 	if (connect(fd, (struct sockaddr *)address, sizeof(*address)) == -1) {
 		fprintf(stderr, ERRCOLOR "TCP: connect: %s\x1B[0m\n", strerror(errno));
 		return -1;
