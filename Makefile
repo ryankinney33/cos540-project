@@ -8,4 +8,4 @@ server: server.o common.o
 client: client.o common.o
 
 clean:
-	$(RM) server server.o client client.o common.o
+	$(RM) server client *.o
