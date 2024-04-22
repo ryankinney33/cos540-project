@@ -189,8 +189,8 @@ void *udp_loop(void *arg) {
 		if (round_occurred && pkt_recvcount == 0) {
 			successive_zeros += 1;
 
-			if (successive_zeros >= 10) {
-				fprintf(stderr, ERRCOLOR "UDP: 10 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
+			if (successive_zeros >= 2) {
+				fprintf(stderr, ERRCOLOR "UDP: 2 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
 				exit(EXIT_FAILURE);
 			}
 		} else if (round_occurred) {
@@ -450,7 +450,8 @@ int main(int argc, char **argv) {
 				cflag = true;
 				blocksize = parse_port(optarg); /* Not really a port, but fits into about the same range */
 				if (errno || blocksize == 0 || blocksize > 4096) {
-					fprintf(stderr, "%s: error: invalid blocksize: %s\n", argv[0], optarg);
+					fprintf(stderr, ERRCOLOR "%s: error: invalid blocksize: %s\n", argv[0], optarg);
+					return 1;
 				}
 			}
 			break;
@@ -467,7 +468,8 @@ int main(int argc, char **argv) {
 				pflag = true;
 				bind_port = parse_port(optarg);
 				if (errno) {
-					fprintf(stderr, "%s: error: invalid port specification: %s\n", argv[0], optarg);
+					fprintf(stderr, ERRCOLOR "%s: error: invalid port specification: %s\n", argv[0], optarg);
+					return 1;
 				}
 			}
 			break;
@@ -478,7 +480,7 @@ int main(int argc, char **argv) {
 				Pflag = true;
 				server_port = parse_port(optarg);
 				if (errno) {
-					fprintf(stderr, "%s: error: invalid port specification: %s\n", argv[0], optarg);
+					fprintf(stderr, ERRCOLOR "%s: error: invalid port specification: %s\n", argv[0], optarg);
 					return 1;
 				}
 			}
