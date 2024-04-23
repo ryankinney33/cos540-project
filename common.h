@@ -45,6 +45,10 @@ static inline bool get_block_status(uint32_t idx, const ACKPacket_t *sack) {
 	return ((sack->ack_stream[idx / 32] & (1 << idx % 32)) != 0);
 }
 
+static inline bool verify_header(const ControlHeader_t *hdr, PType_t expected_type) {
+	return (hdr->head[0] == 'P' && hdr->head[1] == 'D' && hdr->head[2] == 'P' && hdr->type == expected_type);
+}
+
 /* Data types used for the threads of the client and server */
 typedef enum WorkerStatus {
 	UDP_DONE = 1 << 0, /* Set when the UDP thread is done receiving/sending blocks (client/server) */

@@ -13,10 +13,9 @@
 
 /* I/O */
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/epoll.h>
-#include <sys/select.h>
 #include <unistd.h>
 
 /* Threading */
@@ -135,21 +134,11 @@ void *udp_loop(void *arg) {
 	const uint16_t block_packet_len = state->block_packet_len;
 	const uint16_t block_len = block_packet_len - sizeof(FileBlockPacket_t);
 
-	/* Set up the epoll structure */
-	struct epoll_event event, events[1];
-	int timeout = 50; /* 50 ms timeout */
-	int event_count;
-	int epoll_fd = epoll_create1(0);
-	if (epoll_fd == -1) {
-		fprintf(stderr, ERRCOLOR "UDP: epoll_create1: %s\x1B[0m\n", strerror(errno));
-		exit(errno);
-	}
-	event.events = EPOLLIN | EPOLLET;
-	event.data.fd = socket_fd;
-	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_fd, &event) == -1) {
-		fprintf(stderr, ERRCOLOR "UDP: epoll_ctl: %s\x1B[0m\n", strerror(errno));
-		exit(errno);
-	}
+	/* Set up the poll structure */
+	struct pollfd fds[1];
+	fds[0].fd = socket_fd;
+	fds[0].events = POLLIN;
+	int timeout_msecs = 10;
 
 	printf(UDPCOLOR "UDP: Ready to receive blocks.\x1B[0m\n");
 
@@ -163,9 +152,9 @@ void *udp_loop(void *arg) {
 			pthread_mutex_unlock(&state->lock);
 			round_occurred = true;
 
-			event_count = epoll_wait(epoll_fd, events, 1, timeout);
+			int event_count = poll(fds, 1, timeout_msecs);
 			if (event_count == -1) {
-					fprintf(stderr, ERRCOLOR "UDP: epoll_wait: %s\x1B[0m\n", strerror(errno));
+					fprintf(stderr, ERRCOLOR "UDP: poll: %s\x1B[0m\n", strerror(errno));
 					exit(errno);
 			} else if (event_count == 0) { /* Timeout */
 				/* Check if the TCP thread has flagged completion */
@@ -175,16 +164,19 @@ void *udp_loop(void *arg) {
 					printf(UDPCOLOR "UDP: Received %"PRIu64" blocks this round.\x1B[0m\n", pkt_recvcount);
 				}
 				continue;
+			} else if (!(fds[0].revents & POLLIN)) { /* Weird error from poll occurred */
+				fprintf(stderr, ERRCOLOR "UDP: an unexpected error has occurred.\x1B[0m\n");
+				exit(EXIT_FAILURE);
 			}
 
-			/* The socket is ready */
+			/* Read data until we would block */
 			while(1) {
-				read_len = recvfrom(events[0].data.fd, f_block, block_packet_len, 0, NULL, NULL); /* Read blocks until we get EWOULDBLOCK or EAGAIN */
+				read_len = recvfrom(fds[0].fd, f_block, block_packet_len, 0, NULL, NULL); /* Read data until we get EWOULDBLOCK or EAGAIN */
 				if (read_len == -1) {
 					if (errno == EAGAIN || errno == EWOULDBLOCK) {
 						break;
 					}
-					fprintf(stderr, ERRCOLOR "UDP: recfrom: %s\x1B[0m\n", strerror(errno));
+					fprintf(stderr, ERRCOLOR "UDP: recvfrom: %s\x1B[0m\n", strerror(errno));
 					exit(1);
 				}
 				pkt_recvcount += 1;
@@ -195,13 +187,12 @@ void *udp_loop(void *arg) {
 					/* Set file position and write the block to the file */
 					lseek(file_fd, idx * block_len, SEEK_SET);
 					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
-					if (interval && (pkt_recvcount % interval == 0)) {
+					if (interval > 1 && (pkt_recvcount % interval == 0)) {
 						printf(UDPCOLOR "UDP: Received %"PRIu64" packets so far this round.\x1B[0m\n", pkt_recvcount);
 					}
 					set_block_status(idx, state->sack); /* Mark the block as acquired */
 				}
 			}
-
 			pthread_mutex_lock(&state->lock);
 		}
 
@@ -369,45 +360,39 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	printf(TCPCOLOR "TCP: The file contains %zu blocks of %zu bytes.\x1B[0m\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
 
 	/* Initialize UDP connection with server */
-	while(1) {
-		err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)server_address, sizeof(*server_address));
-		if (err == -1) {
-			fprintf(stderr, ERRCOLOR "UDP: sendto: %s\x1B[0m\n", strerror(errno));
-			return errno;
-		}
-
-		struct timeval timeout;
-		fd_set fdlist;
-
-		/* Set 500 ms timeout */
-		timeout.tv_sec = 0;
-		timeout.tv_usec = 500000;
-
-		FD_ZERO(&fdlist);
-		FD_SET(state.tcp_socket_fd, &fdlist);
-
-		err = select(state.tcp_socket_fd + 1, &fdlist, NULL, NULL, &timeout);
-		if (err == -1) {
-			fprintf(stderr, "\x1B[1;TCP: select: %s\x1B[0m\n", strerror(errno));
-			return errno;
-		}
-
-		/* see if data came in */
-		if (FD_ISSET(state.tcp_socket_fd, &fdlist)) {
-			/* Read the data */
-			UDPReadyPacket_t rdy;
-			len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), 0);
-			if (len == -1) {
-				fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
-				exit(errno);
-			} else if (len == 0) {
-				fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
-				exit(EXIT_FAILURE);
+	{
+		struct pollfd fds[1];
+		fds[0].fd = state.tcp_socket_fd;
+		fds[0].events = POLLIN;
+		int timeout_msecs = 500;
+		while(1) {
+			err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)server_address, sizeof(*server_address));
+			if (err == -1) {
+				fprintf(stderr, ERRCOLOR "UDP: sendto: %s\x1B[0m\n", strerror(errno));
+				return errno;
 			}
 
-			if (rdy.type == UDPRDY)
-				break;
-			break;
+			err = poll(fds, 1, timeout_msecs);
+			if (err == -1) {
+				fprintf(stderr, "\x1B[1;TCP: poll: %s\x1B[0m\n", strerror(errno));
+				return errno;
+			} else if (err > 0) {
+				if (!(fds[0].revents & POLLIN)) {
+					fprintf(stderr, ERRCOLOR "TCP: an unexpected error has occurred.\x1B[0m\n");
+					exit(EXIT_FAILURE);
+				}
+				/* Read the data */
+				UDPReadyPacket_t rdy;
+				len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), 0);
+				if (len == -1) {
+					fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+					exit(errno);
+				} else if (len == 0) {
+					fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
+					exit(EXIT_FAILURE);
+				}
+				break; //FIXME: do a real check
+			}
 		}
 	}
 	putchar('\n');
