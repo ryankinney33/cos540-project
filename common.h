@@ -57,6 +57,7 @@ typedef enum WorkerStatus {
 } WorkerStatus_t;
 struct transmit_state {
 	pthread_mutex_t lock; /* Avoid race conditions */
+	pthread_cond_t udp_done; /* Avoid race conditions */
 	ACKPacket_t *sack; /* Holds the address of the sack packet */
 	FileBlockPacket_t *f_block;
 	size_t num_blocks;

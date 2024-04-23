@@ -142,40 +142,47 @@ void *udp_loop(void *arg) {
 
 	printf(UDPCOLOR "UDP: Ready to receive blocks.\x1B[0m\n");
 
-	pthread_mutex_lock(&state->lock);
-	while (!(state->status & TRANSMISSION_OVER)) {
+	while (1) {
 		uint64_t pkt_recvcount = 0;
-		bool round_occurred = false;
 
-		/* Read blocks and write them to the file */
-		while (!(state->status & UDP_DONE)) {
+		pthread_mutex_lock(&state->lock);
+		while (state->status & UDP_DONE) { /* Wait for the TCP thread to start the round */
+			pthread_cond_wait(&state->udp_done, &state->lock);
+		}
+		if (state->status & TRANSMISSION_OVER) { /* See if there is any more work to be done */
 			pthread_mutex_unlock(&state->lock);
-			round_occurred = true;
+			break;
+		}
+		pthread_mutex_unlock(&state->lock); /* We don't need to hold the lock now */
 
+		/* Round begins, receive blocks and write to file */
+		while(1) {
 			int event_count = poll(fds, 1, timeout_msecs);
 			if (event_count == -1) {
-					fprintf(stderr, ERRCOLOR "UDP: poll: %s\x1B[0m\n", strerror(errno));
-					exit(errno);
+				fprintf(stderr, ERRCOLOR "UDP: poll: %s\x1B[0m\n", strerror(errno));
+				exit(errno);
 			} else if (event_count == 0) { /* Timeout */
-				/* Check if the TCP thread has flagged completion */
 				pthread_mutex_lock(&state->lock);
-				if (state->status & TCP_DONE_RECEIVED) {
+				if (state->status & TCP_DONE_RECEIVED) { /* Check if the TCP thread has flagged completion */
 					state->status |= UDP_DONE; /* Receive no more blocks */
+					pthread_cond_signal(&state->udp_done);
+					pthread_mutex_unlock(&state->lock);
 					printf(UDPCOLOR "UDP: Received %"PRIu64" blocks this round.\x1B[0m\n", pkt_recvcount);
+					break;
 				}
+				pthread_mutex_unlock(&state->lock);
 				continue;
 			} else if (!(fds[0].revents & POLLIN)) { /* Weird error from poll occurred */
 				fprintf(stderr, ERRCOLOR "UDP: an unexpected error has occurred.\x1B[0m\n");
 				exit(EXIT_FAILURE);
 			}
 
-			/* Read data until we would block */
+			/* Read all available data */
 			while(1) {
 				read_len = recvfrom(fds[0].fd, f_block, block_packet_len, 0, NULL, NULL); /* Read data until we get EWOULDBLOCK or EAGAIN */
 				if (read_len == -1) {
-					if (errno == EAGAIN || errno == EWOULDBLOCK) {
+					if (errno == EAGAIN || errno == EWOULDBLOCK)
 						break;
-					}
 					fprintf(stderr, ERRCOLOR "UDP: recvfrom: %s\x1B[0m\n", strerror(errno));
 					exit(1);
 				}
@@ -193,22 +200,14 @@ void *udp_loop(void *arg) {
 					set_block_status(idx, state->sack); /* Mark the block as acquired */
 				}
 			}
-			pthread_mutex_lock(&state->lock);
 		}
 
-		if (round_occurred && pkt_recvcount == 0) {
-			successive_zeros += 1;
-
-			if (successive_zeros >= 2) {
-				fprintf(stderr, ERRCOLOR "UDP: 2 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
-				exit(EXIT_FAILURE);
-			}
-		} else if (round_occurred) {
-			successive_zeros = 0;
+		/* Check failure condition */
+		successive_zeros = (pkt_recvcount > 0) ? 0 : successive_zeros + 1;
+		if (successive_zeros > 3) {
+			fprintf(stderr, ERRCOLOR "UDP: 2 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
+			exit(EXIT_FAILURE);
 		}
-		pthread_mutex_unlock(&state->lock);
-		sched_yield(); /* Allow the TCP thread to work */
-		pthread_mutex_lock(&state->lock);
 	}
 
 	state->error_code = 0;
@@ -231,9 +230,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			/* Server closed the connection */
 			fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
 			exit(EXIT_FAILURE);
-		}
-
-		if (received_complete.type != COMPLETE) {
+		} else if (received_complete.type != COMPLETE) { //TODO: change this
 			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
 			exit(EXIT_FAILURE);
 		}
@@ -243,13 +240,9 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 		/* Update the state */
 		pthread_mutex_lock(&state->lock);
 		state->status |= TCP_DONE_RECEIVED;
-
-		/* Wait for the UDP listener to stop receiving blocks */
-		do {
-			pthread_mutex_unlock(&state->lock);
-			sched_yield(); /* Allow the UDP thread to work */
-			pthread_mutex_lock(&state->lock);
-		} while (!(state->status & UDP_DONE));
+		while(!(state->status & UDP_DONE)) { /* Wait for UDP thread to finish */
+			pthread_cond_wait(&state->udp_done, &state->lock);
+		}
 
 		/* Build the ACK packet */
 		ack_pkt = build_ACK_packet(use_nack, state->sack, state->num_blocks);
@@ -257,6 +250,8 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			/* Send the complete message to the server */
 			send(sock_fd, &done, sizeof(done), 0);
 			state->status |= TRANSMISSION_OVER;
+			state->status &= ~UDP_DONE;
+			pthread_cond_signal(&state->udp_done);
 			pthread_mutex_unlock(&state->lock);
 			printf(TCPCOLOR "TCP: All blocks received. Cleaning up...\x1B[0m\n");
 			return;
@@ -276,6 +271,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 
 			/* Signal to the UDP thread to begin another round */
 			state->status &= ~(UDP_DONE | TCP_DONE_RECEIVED);
+			pthread_cond_signal(&state->udp_done);
 			pthread_mutex_unlock(&state->lock);
 		}
 	}
@@ -290,7 +286,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	int err;
 	ssize_t len;
 	pthread_t udp_tid;
-	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
+	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER, .udp_done = PTHREAD_COND_INITIALIZER};
 
 	printf("Using %s ACK mode.\n", (use_nack)? "Negative" : "Selective");
 
