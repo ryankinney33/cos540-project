@@ -28,7 +28,7 @@ size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks);
  * Opens a UDP socket and binds to an address.
  * Returns the file descriptor for the socket.
  */
-int get_socket(struct sockaddr_in *address, int type);
+int get_socket(struct sockaddr_in *address, int type, bool reuse);
 
 /* Sets the bit for block idx in the SACK packet */
 static inline void set_block_status(uint32_t idx, ACKPacket_t *sack) {

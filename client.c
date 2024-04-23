@@ -312,7 +312,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	}
 
 	/* Open a non-blocking UDP socket and bind it to the wanted address */
-	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM | SOCK_NONBLOCK);
+	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM | SOCK_NONBLOCK, false);
 
 	/* Connect to the server */
 	state.tcp_socket_fd = connect_to_server(server_address);

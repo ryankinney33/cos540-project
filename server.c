@@ -283,14 +283,9 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 	state.file_fd = open(file_path, O_RDONLY); //FIXME: error check this
 
 	// serv_tcp_fd = get_tcp_listener(bind_addr, bind_port);
-	serv_tcp_fd = get_socket(bind_address, SOCK_STREAM);
+	serv_tcp_fd = get_socket(bind_address, SOCK_STREAM, true);
 	if (serv_tcp_fd == -1) {
 		return errno;
-	}
-
-	/* Avoid time-wait state on the server socket */
-	if (setsockopt(serv_tcp_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
-		perror("setsockopt"); /* Not a fatal error... */
 	}
 
 	/* Set socket to listening mode */
@@ -300,7 +295,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 	}
 	printf("Waiting for a connection on %s:%"PRIu16"\n", inet_ntoa(bind_address->sin_addr), ntohs(bind_address->sin_port)); // TODO: change this
 
-	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM); // FIXME: error check this
+	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM, true); // FIXME: error check this
 
 	/* Receive a connection on the socket */
 	state.tcp_socket_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &client_addr_len);

@@ -55,7 +55,7 @@ size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
  * Opens a socket and binds it to the address.
  * Returns the file descriptor for the socket.
  */
-int get_socket(struct sockaddr_in *address, int type) {
+int get_socket(struct sockaddr_in *address, int type, bool reuse) {
 	int fd;
 	// struct sockaddr_in address;
 
@@ -66,7 +66,12 @@ int get_socket(struct sockaddr_in *address, int type) {
 		return -1;
 	}
 
-	// address = parse_address(ip_addr, port);
+	/* Avoid time-wait state on bound sockets if wanted */
+	if (reuse) {
+		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
+			fprintf(stderr, ERRCOLOR "warning: setsockopt failed: %s\x1B[0m\n", strerror(errno)); /* Not a fatal error... */
+		}
+	}
 
 	if (bind(fd, (struct sockaddr*)address, sizeof(*address)) == -1) {
 		fprintf(stderr, ERRCOLOR "bind: %s\x1B[0m\n", strerror(errno));
