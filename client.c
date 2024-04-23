@@ -4,7 +4,6 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
-
 #include <getopt.h>
 
 /* Sockets */
@@ -234,8 +233,12 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 	const int sock_fd = state->tcp_socket_fd;
 
 	while(1) {
-		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_WAITALL); /* FIXME: error check */
+		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_WAITALL);
 		if (recv_len == -1) {
+			exit(EXIT_FAILURE);
+		} else if (recv_len == 0) {
+			/* Server closed the connection */
+			fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
 			exit(EXIT_FAILURE);
 		}
 
@@ -269,7 +272,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 		} else { /* The transmission continues */
 			printf(TCPCOLOR "TCP: Sending a %s mode ACK packet to the server.\x1B[0m\n", use_nack ? "Negative" : "Selective");
 			size_t len = sizeof(*ack_pkt) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
-			int err = send(sock_fd, ack_pkt, len, 0); /* FIXME: error check */
+			int err = send(sock_fd, ack_pkt, len, 0);
 			if (err == -1) {
 				fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
 				state->status |= TRANSMISSION_OVER;
@@ -294,6 +297,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 
 	/* Thread state */
 	int err;
+	ssize_t len;
 	pthread_t udp_tid;
 	struct transmit_state state = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
@@ -322,30 +326,47 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	f_info.header.type = FILEINFO;
 	f_info.num_blocks = 0;
 	f_info.blocksize = htons(expected_blocksize - 1);
-	send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
+	len = send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
+	if (len == -1) {
+		fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
+		exit(errno);
+	}
 
 	/* Receive the file size from the server */
-	recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
+	len = recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
+	if (len == -1) {
+		fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+		exit(errno);
+	} else if (len == 0) {
+		fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
+		exit(EXIT_FAILURE);
+	}
 
 	state.block_packet_len = ntohs(f_info.blocksize) + 1 + sizeof(FileBlockPacket_t);
 
 	state.f_block = malloc(state.block_packet_len);
 	if (state.f_block == NULL) {
 		/* A fatal error occurred */
+		fprintf(stderr, ERRCOLOR "malloc: %s\x1B[0m\n", strerror(errno));
 		return errno;
 	}
 
 	/* Create the SACK bitmap */
 	state.num_blocks = ntohl(f_info.num_blocks) + 1;
 	uint32_t block_status_word_len = (state.num_blocks % 32) ? (state.num_blocks / 32 + 1) : (state.num_blocks / 32);
-	state.sack = calloc(1, sizeof(ACKPacket_t) + block_status_word_len * sizeof(uint32_t)); /* FIXME: error check this */
+	state.sack = calloc(1, sizeof(ACKPacket_t) + block_status_word_len * sizeof(uint32_t));
+	if (state.sack == NULL) {
+		/* A fatal error occurred */
+		fprintf(stderr, ERRCOLOR "calloc: %s\x1B[0m\n", strerror(errno));
+		return errno;
+	}
 
 	/* Fill in the fields of the SACK packet */
 	state.sack->header = done;
 	state.sack->header.type = SACK;
 	state.sack->length = htonl(block_status_word_len - 1);
 
-	printf(TCPCOLOR "TCP: The file contains %zu blocks of %zu bytes.\n\x1B[0m", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
+	printf(TCPCOLOR "TCP: The file contains %zu blocks of %zu bytes.\x1B[0m\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
 
 	/* Initialize UDP connection with server */
 	while(1) {
@@ -355,17 +376,17 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 			return errno;
 		}
 
-		/* Set 500 ms timeout */
 		struct timeval timeout;
 		fd_set fdlist;
 
+		/* Set 500 ms timeout */
 		timeout.tv_sec = 0;
 		timeout.tv_usec = 500000;
 
 		FD_ZERO(&fdlist);
 		FD_SET(state.tcp_socket_fd, &fdlist);
 
-		err = select(state.tcp_socket_fd + 1, &fdlist, NULL, NULL, &timeout); /* FIXME: ERROR CHECK */
+		err = select(state.tcp_socket_fd + 1, &fdlist, NULL, NULL, &timeout);
 		if (err == -1) {
 			fprintf(stderr, "\x1B[1;TCP: select: %s\x1B[0m\n", strerror(errno));
 			return errno;
@@ -375,10 +396,18 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 		if (FD_ISSET(state.tcp_socket_fd, &fdlist)) {
 			/* Read the data */
 			UDPReadyPacket_t rdy;
-			err = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), 0); /* FIXME: ERROR CHECK */
+			len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), 0);
+			if (len == -1) {
+				fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+				exit(errno);
+			} else if (len == 0) {
+				fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
+				exit(EXIT_FAILURE);
+			}
+
 			if (rdy.type == UDPRDY)
 				break;
-			break; // TODO: handle this correctly
+			break;
 		}
 	}
 	putchar('\n');
