@@ -6,17 +6,18 @@
 #include <string.h>
 
 #include <getopt.h>
-#include <sys/select.h>
 
 /* Sockets */
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* File I/O */
+/* I/O */
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/epoll.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 /* Threading */
@@ -135,6 +136,22 @@ void *udp_loop(void *arg) {
 	const uint16_t block_packet_len = state->block_packet_len;
 	const uint16_t block_len = block_packet_len - sizeof(FileBlockPacket_t);
 
+	/* Set up the epoll structure */
+	struct epoll_event event, events[1];
+	int timeout = 50; /* 50 ms timeout */
+	int event_count;
+	int epoll_fd = epoll_create1(0);
+	if (epoll_fd == -1) {
+		fprintf(stderr, ERRCOLOR "UDP: epoll_create1: %s\x1B[0m\n", strerror(errno));
+		exit(errno);
+	}
+	event.events = EPOLLIN | EPOLLET;
+	event.data.fd = socket_fd;
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_fd, &event) == -1) {
+		fprintf(stderr, ERRCOLOR "UDP: epoll_ctl: %s\x1B[0m\n", strerror(errno));
+		exit(errno);
+	}
+
 	printf(UDPCOLOR "UDP: Ready to receive blocks.\x1B[0m\n");
 
 	pthread_mutex_lock(&state->lock);
@@ -147,41 +164,11 @@ void *udp_loop(void *arg) {
 			pthread_mutex_unlock(&state->lock);
 			round_occurred = true;
 
-			struct timeval timeout;
-			fd_set fdlist;
-
-			/* Set 5 ms timeout */
-			timeout.tv_sec = 0;
-			timeout.tv_usec = 5000;
-
-			FD_ZERO(&fdlist);
-			FD_SET(socket_fd, &fdlist);
-
-			if (select(socket_fd + 1, &fdlist, NULL, NULL, &timeout) == -1) { /* I think one thread using select/poll/epoll on two sockets would make this project way easier */
-				fprintf(stderr, ERRCOLOR "UDP: select: %s\x1B[0m\n", strerror(errno));
-				exit(errno); /* FIXME: better error checking */
-			}
-
-			if (FD_ISSET(socket_fd, &fdlist)) { /* Check if data was received */
-				read_len = recvfrom(socket_fd, f_block, block_packet_len, 0, NULL, NULL);
-				pkt_recvcount += 1;
-
-				/* Extract index from the block and write to file */
-				off_t idx = ntohl(f_block->index);
-				if (!get_block_status(idx, state->sack)) { /* Only change file if this is a new block */
-					/* Set file position and write the block to the file */
-					lseek(file_fd, idx * block_len, SEEK_SET);
-					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
-
-					if (interval && (pkt_recvcount % interval == 0)) {
-						printf(UDPCOLOR "UDP: Received %"PRIu64" packets so far this round.\x1B[0m\n", pkt_recvcount);
-					}
-
-				}
-
-				pthread_mutex_lock(&state->lock);
-				set_block_status(idx, state->sack); /* Mark the block as acquired */
-			} else { /* Timeout */
+			event_count = epoll_wait(epoll_fd, events, 1, timeout);
+			if (event_count == -1) {
+					fprintf(stderr, ERRCOLOR "UDP: epoll_wait: %s\x1B[0m\n", strerror(errno));
+					exit(errno);
+			} else if (event_count == 0) { /* Timeout */
 				/* Check if the TCP thread has flagged completion */
 				pthread_mutex_lock(&state->lock);
 				if (state->status & TCP_DONE_RECEIVED) {
@@ -190,6 +177,33 @@ void *udp_loop(void *arg) {
 				}
 				continue;
 			}
+
+			/* The socket is ready */
+			while(1) {
+				read_len = recvfrom(events[0].data.fd, f_block, block_packet_len, 0, NULL, NULL); /* Read blocks until we get EWOULDBLOCK or EAGAIN */
+				if (read_len == -1) {
+					if (errno == EAGAIN || errno == EWOULDBLOCK) {
+						break;
+					}
+					fprintf(stderr, ERRCOLOR "UDP: recfrom: %s\x1B[0m\n", strerror(errno));
+					exit(1);
+				}
+				pkt_recvcount += 1;
+
+				/* Extract index from the block and write to file */
+				off_t idx = ntohl(f_block->index);
+				if (!get_block_status(idx, state->sack)) { /* Only change file if this is a new block */
+					/* Set file position and write the block to the file */
+					lseek(file_fd, idx * block_len, SEEK_SET);
+					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+					if (interval && (pkt_recvcount % interval == 0)) {
+						printf(UDPCOLOR "UDP: Received %"PRIu64" packets so far this round.\x1B[0m\n", pkt_recvcount);
+					}
+					set_block_status(idx, state->sack); /* Mark the block as acquired */
+				}
+			}
+
+			pthread_mutex_lock(&state->lock);
 		}
 
 		if (round_occurred && pkt_recvcount == 0) {
@@ -220,26 +234,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 	const int sock_fd = state->tcp_socket_fd;
 
 	while(1) {
-		/* Receive the Complete message from the server */
-		struct timeval timeout;
-		fd_set fdlist;
-
-		/* Set 50 ms timeout */
-		timeout.tv_sec = 0;
-		timeout.tv_usec = 50000;
-
-		FD_ZERO(&fdlist);
-		FD_SET(sock_fd, &fdlist);
-
-		if (select(sock_fd + 1, &fdlist, NULL, NULL, &timeout) == -1) {
-			fprintf(stderr, ERRCOLOR "TCP: select: %s\x1B[0m\n", strerror(errno));
-			exit(errno);
-		}
-
-		if (!FD_ISSET(sock_fd, &fdlist))
-			continue; /* If unset, then a timeout occurred. Try again */
-
-		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), 0); /* FIXME: error check */
+		recv_len = recv(sock_fd, &received_complete, sizeof(received_complete), MSG_WAITALL); /* FIXME: error check */
 		if (recv_len == -1) {
 			exit(EXIT_FAILURE);
 		}
