@@ -3,7 +3,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <inttypes.h>
-
+#include <string.h>
 #include <getopt.h>
 
 /* Sockets */
@@ -170,6 +170,7 @@ static void *udp_loop(void *arg) {
 		state->status |= UDP_DONE;
 		pthread_cond_signal(&state->udp_done);
 		pthread_mutex_unlock(&state->lock);
+		sched_yield();
 
 		/* Wait for the TCP thread to finish */
 		pthread_mutex_lock(&state->lock);
@@ -194,62 +195,6 @@ void tcp_worker(struct transmit_state *state) {
 
 	const int sock_fd = state->tcp_socket_fd;
 
-// 	while(1) {
-// 		/* Check the state */
-// 		pthread_mutex_lock(&state->lock);
-// 		if (state->status & UDP_DONE) { /* Check if UDP thread is finished */
-// 			free(state->sack); /* Done with the ACK, free it */
-//
-// 			/* Send the Complete packet */
-// 			len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
-// 			if (len == -1) {
-// 				perror("TCP: send");
-// 				break;
-// 			}
-//
-// 			/* Receive the control header */
-// 			len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
-//
-// 			if (ctrl.type == COMPLETE) {
-// 				/* We are done, cleanup */
-// 				printf(TCPCOLOR "TCP: The client has received all blocks. Cleaning up...\x1B[0m\n");
-// 				break;
-// 			} else if (ctrl.type != SACK && ctrl.type != NACK) {
-// 				/* something went wrong */
-// 				printf("TCP: The client sent an unexpected packet. Aborting.\n");
-// 				break;
-// 			}
-//
-// 			printf(TCPCOLOR "TCP: Received a %s mode ACK packet from client. Beginning next round.\x1B[0m\n", ctrl.type == SACK ? "Selective" : "Negative");
-//
-// 			/* Get the length of the ack stream */
-// 			len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
-// 			ack_stream_length = ntohl(ack_stream_length);
-//
-// 			/* Allocate and copy information into the ACK packet */
-// 			ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
-// 			state->sack = malloc(ack_pkt_len); /* FIXME: error check this */
-//
-// 			state->sack->header = ctrl;
-// 			state->sack->length = ack_stream_length;
-//
-// 			/* Receive the ACK stream and write it to the ACK packet */
-// 			len = recv(sock_fd, state->sack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), MSG_WAITALL);
-//
-// 			/* Convert the packet fields to host order (if NACK) */
-// 			if (state->sack->header.type == NACK) {
-// 				for (size_t i = 0; i <= ack_stream_length; ++i) {
-// 					state->sack->ack_stream[i] = ntohl(state->sack->ack_stream[i]);
-// 				}
-// 			}
-//
-// 			/* Signal to UDP thread to begin */
-// 			state->status &= ~UDP_DONE;
-// 		}
-// 		pthread_mutex_unlock(&state->lock);
-// 		sched_yield(); /* Let the UDP thread execute */
-// 	}
-
 	while(1) {
 		/* Wait for the UDP thread to finish */
 		pthread_mutex_lock(&state->lock);
@@ -259,14 +204,21 @@ void tcp_worker(struct transmit_state *state) {
 		free(state->sack); /* We are done with the ack, free it */
 
 		/* Tell the client we are done transmitting blocks */
-		len = send(sock_fd, &done, sizeof(done), 0); /* FIXME: error check this */
+		len = send(sock_fd, &done, sizeof(done), 0);
 		if (len == -1) {
-			perror("TCP: send");
+			fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
 			break;
 		}
 
 		/* Receive the control header */
-		len = recv(sock_fd, &ctrl, sizeof(ctrl), 0); /* FIXME: error check*/
+		len = recv(sock_fd, &ctrl, sizeof(ctrl), 0);
+		if (len == -1) {
+			fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+			exit(errno);
+		} else if (len == 0) {
+			fprintf(stderr, ERRCOLOR "TCP: error: the client has unexpectedly closed the connection.\x1B[0m\n");
+			exit(EXIT_FAILURE);
+		}
 
 		if (ctrl.type == COMPLETE) { //TODO: real packet verification
 			/* We are done, cleanup */
@@ -275,24 +227,43 @@ void tcp_worker(struct transmit_state *state) {
 		} else if (ctrl.type != SACK && ctrl.type != NACK) {
 			/* something went wrong */
 			printf("TCP: The client sent an unexpected packet. Aborting.\n");
-			break;
+			exit(EXIT_FAILURE);
 		}
 
 		printf(TCPCOLOR "TCP: Received a %s mode ACK packet from client. Beginning next round.\x1B[0m\n", ctrl.type == SACK ? "Selective" : "Negative");
 
 		/* Get the length of the ack stream */
-		len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0); /* FIXME: error check */
+		len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0);
+		if (len == -1) {
+			fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+			exit(errno);
+		} else if (len == 0) {
+			fprintf(stderr, ERRCOLOR "TCP: error: the client has unexpectedly closed the connection.\x1B[0m\n");
+			exit(EXIT_FAILURE);
+		}
+
 		ack_stream_length = ntohl(ack_stream_length);
 
 		/* Allocate and copy information into the ACK packet */
 		ack_pkt_len = (ack_stream_length + 1) * sizeof(uint32_t) + sizeof(ACKPacket_t);
-		state->sack = malloc(ack_pkt_len); /* FIXME: error check this */
+		state->sack = malloc(ack_pkt_len);
+		if (state->sack == NULL) {
+			fprintf(stderr, ERRCOLOR "TCP: malloc: %s\x1B[0m\n", strerror(errno));
+			exit(errno);
+		}
 
 		state->sack->header = ctrl;
 		state->sack->length = ack_stream_length;
 
 		/* Receive the ACK stream and write it to the ACK packet */
 		len = recv(sock_fd, state->sack->ack_stream, ack_pkt_len - sizeof(ACKPacket_t), MSG_WAITALL);
+		if (len == -1) {
+			fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+			exit(errno);
+		} else if (len < (ssize_t)(ack_pkt_len - sizeof(ACKPacket_t))) {
+			fprintf(stderr, ERRCOLOR "TCP: error: the client has unexpectedly closed the connection.\x1B[0m\n");
+			exit(EXIT_FAILURE);
+		}
 
 		/* Convert the packet fields to host order (if NACK) */
 		if (state->sack->header.type == NACK) {
@@ -331,9 +302,14 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 
 	/* Other */
 	char tmp[INET_ADDRSTRLEN];
+	ssize_t err_check;
 
 	/* Open the file being transferred and build file info packet */
-	state.file_fd = open(file_path, O_RDONLY); //FIXME: error check this
+	state.file_fd = open(file_path, O_RDONLY);
+	if (state.file_fd == -1) {
+		fprintf(stderr, ERRCOLOR "open: %s\x1B[0m\n", strerror(errno));
+		return errno;
+	}
 
 	/* Get the TCP listening socket */
 	serv_tcp_fd = get_socket(bind_address, SOCK_STREAM, true);
@@ -342,45 +318,69 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 	}
 	if (listen(serv_tcp_fd, 1) == -1) {
 		perror("listen");
-		return -1;
+		fprintf(stderr, ERRCOLOR "TCP: listen: %s\x1B[0m\n", strerror(errno));
+		return errno;
 	}
 	printf(TCPCOLOR "TCP: Waiting for a connection on %s:%"PRIu16".\x1B[0m\n",
 			inet_ntop(AF_INET, &bind_address->sin_addr, tmp, INET_ADDRSTRLEN),
 			ntohs(bind_address->sin_port));
 
 	/* Create the UDP socket */
-	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM, true); // FIXME: error check this
+	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM, true);
+	if (state.udp_socket_fd == -1)
+		return errno;
+
 
 	/* Receive a connection on the socket */
 	state.tcp_socket_fd = accept(serv_tcp_fd, (struct sockaddr*)&client_addr, &client_addr_len);
 	if (state.tcp_socket_fd == -1) {
-		perror("accept");
+		fprintf(stderr, ERRCOLOR "TCP: accept: %s\x1B[0m\n", strerror(errno));
 		return errno;
 	}
 	printf(TCPCOLOR "TCP: Received a connection from %s.\x1B[0m\n", inet_ntop(AF_INET, &client_addr.sin_addr, tmp, INET_ADDRSTRLEN));
 
 	/* Get the wanted blocksize from the client */
-	recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); // FIXME: error check this
+	err_check = recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
+	if (err_check == -1) {
+		fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+		exit(errno);
+	} else if (err_check == 0) {
+		fprintf(stderr, ERRCOLOR "TCP: error: the client has unexpectedly closed the connection.\x1B[0m\n");
+		exit(EXIT_FAILURE);
+	}
 	blocksize = ntohs(f_info.blocksize) + 1;
 
 	/* Build the file information packet with the file size and true blocksize */
 	f_info = get_fileinfo(state.file_fd, blocksize);
 
 	/* Send the file information packet to the client */
-	send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0); //FIXME: error check this
+	if (send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0) == -1) {
+		fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
+		return errno;
+	}
 
 	/* Receive the UDP information from the client */
-	recvfrom(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len); //FIXME: error check this
-	send(state.tcp_socket_fd, &ready, sizeof(ready), 0); //FIXME: error check this
+	if (recvfrom(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len) == -1) {
+		fprintf(stderr, ERRCOLOR "UDP: recvfrom: %s\x1B[0m\n", strerror(errno));
+		return errno;
+	}
+	if (send(state.tcp_socket_fd, &ready, sizeof(ready), 0) == -1) { /* Tell client we received it */
+		fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
+		return errno;
+	}
 
 	/* Connect to client UDP socket, so we can use send() instead of sendto(), and store less state information */
 	if (connect(state.udp_socket_fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) == -1) {
-		perror("connect");
-		return errno; /* TODO: cleanup */
+		fprintf(stderr, ERRCOLOR "UDP: connect: %s\x1B[0m\n", strerror(errno));
+		return errno;
 	}
 
 	state.block_packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
-	state.f_block = malloc(state.block_packet_len); // FIXME: error check this
+	state.f_block = malloc(state.block_packet_len);
+	if (state.f_block == NULL) {
+		fprintf(stderr, ERRCOLOR "malloc: %s\x1B[0m\n", strerror(errno));
+		return errno;
+	}
 	state.num_blocks = ntohl(f_info.num_blocks) + 1;
 
 	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);
@@ -470,7 +470,5 @@ int main(int argc, char **argv) {
 		exit(errno);
 	}
 
-	run_transmission(file_path, &bind_address);
-
-	return 0;
+	return run_transmission(file_path, &bind_address);
 }
