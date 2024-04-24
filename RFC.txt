@@ -180,7 +180,7 @@ Ack Stream: variable
 
   In NACK mode, it is the list of block indexes that have
   not been received by the client. The indexes are 32-bit numeric
-  quantities.
+  quantities and are listed in ascending order.
 
 3.1.5 Complete Packet
 ---------------------

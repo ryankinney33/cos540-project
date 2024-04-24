@@ -209,8 +209,6 @@ void *udp_loop(void *arg) {
 			exit(EXIT_FAILURE);
 		}
 	}
-
-	state->error_code = 0;
 	return NULL;
 }
 

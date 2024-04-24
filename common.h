@@ -64,7 +64,6 @@ struct transmit_state {
 	int file_fd;
 	int tcp_socket_fd;
 	int udp_socket_fd;
-	int error_code;
 	WorkerStatus_t status;
 	uint16_t block_packet_len;
 };
