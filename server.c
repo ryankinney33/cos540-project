@@ -28,11 +28,11 @@
 #define SRV_TCP_A   "0.0.0.0"
 #define SRV_TCP_P   8888
 
-// /* These are not used... */
-// #define CLI_UDP_P   27019
-// #define CLI_UDP_A   "127.0.0.1"
-// #define CLI_TCP_A   "0.0.0.0"
-// #define CLI_TCP_P   27021
+/* These are not used... */
+#define CLI_UDP_P   8888
+#define CLI_UDP_A   "127.0.0.1"
+#define CLI_TCP_A   "0.0.0.0"
+#define CLI_TCP_P   8888
 
 /*******************************************************************************************/
 /* Private Utility functions                                                               */

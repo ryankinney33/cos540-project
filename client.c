@@ -32,9 +32,9 @@
 #define CLI_UDP_A   "0.0.0.0"
 #define CLI_UDP_P   0 /* 0 makes the OS automatically choose an available port */
 
-// /* These are not used... */
-// #define CLI_TCP_A   "0.0.0.0"
-// #define CLI_TCP_P   27021
+/* These are not used... */
+#define CLI_TCP_A   "0.0.0.0"
+#define CLI_TCP_P   8888
 
 /*******************************************************************************************/
 /* Private Utility functions                                                               */
@@ -43,6 +43,7 @@
 /* Connects to the server's TCP socket listening at the specified address */
 static int connect_to_server(struct sockaddr_in *address) {
 	int fd;
+	char tmp[INET_ADDRSTRLEN];
 
 	/* Open the TCP socket */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -51,7 +52,9 @@ static int connect_to_server(struct sockaddr_in *address) {
 		return -1;
 	}
 
-	printf(TCPPREFIX "Connecting to %s:%"PRIu16"...\n", inet_ntoa(address->sin_addr), ntohs(address->sin_port)); // TODO: change this
+	printf(TCPPREFIX "Connecting to %s:%"PRIu16"...\n",
+			inet_ntop(AF_INET, &address->sin_addr, tmp, INET_ADDRSTRLEN),
+			ntohs(address->sin_port));
 	if (connect(fd, (struct sockaddr *)address, sizeof(*address)) == -1) {
 		fprintf(stderr, TCPPREFIX ERRPREFIX "connect: %s\n", strerror(errno));
 		return -1;
@@ -444,7 +447,7 @@ int main(int argc, char **argv) {
 		"-n\t\tuse negative acknowledgement mode\n"
 		"-p\t\tbind to this port (default: automatically assigned port)\n"
 		"-P\t\tport server is listening on (default: %"PRIu16")\n"
-		"-s\t\taddress of the server (default: %s)\n"
+		"-s\t\taddress of the server (default: %s)\n" /* TODO: maybe use hostname instead of IP address? */
 		"\n"
 		"The file transmission is completed according to RFC COS540.\n";
 
