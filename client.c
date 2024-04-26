@@ -85,7 +85,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_
 			/* Create preamble */
 			pkt->header.head[0] = 'P';
 			pkt->header.head[1] = 'D';
-			pkt->header.head[0] = 'P';
+			pkt->header.head[2] = 'P';
 			pkt->header.type = PTYPE_NACK;
 
 			/* Set the length */

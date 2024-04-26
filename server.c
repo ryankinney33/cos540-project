@@ -87,21 +87,20 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
  * Gets the next block index to send to client.
  * Returns -1 if there are no more blocks to send
  */
-static ssize_t get_next_index(ssize_t previous_index, const ACKPacket_t *ack, size_t num_blocks_total, uint64_t pkt_sendcount) {
-	if (ack == NULL) { /* If NULL, round 1 is active, increment the index */
+static ssize_t get_next_index(ACKPacket_t *ack, size_t num_blocks_total, ssize_t previous_index, uint64_t pkt_sendcount) {
+	if (ack == NULL) /* If NULL, round 1 is active, increment the index */
 		return previous_index + 1; /* Don't need to check if final block, since that is handled elsewhere in this case */
-	}
 
 	if (ack->header.type == PTYPE_SACK) {
 		for (size_t i = previous_index + 1; i < num_blocks_total; ++i) {
-			if (!get_block_status(i, ack)) {
+			if (!get_block_status(i, ack))
 				return i;
-			}
 		}
 	} else { /* NACK */
-		return ack->ack_stream[pkt_sendcount];
+		if (pkt_sendcount <= ack->length)
+			return ack->ack_stream[pkt_sendcount];
 	}
-	return -1; /* Nothing found, return done */
+	return -1; /* No more blocks, we are done */
 }
 
 /************************************************************************************/
@@ -126,7 +125,7 @@ static void *udp_loop(void *arg) {
 
 		do {
 			/* Go to the next block index in the file */
-			block_idx = get_next_index(block_idx, state->sack, num_blocks, num_blocks_sent);
+			block_idx = get_next_index(state->sack, num_blocks, block_idx, num_blocks_sent);
 			if (block_idx == -1) {
 				break; /* Invalid index, we are done */
 			}
