@@ -47,17 +47,17 @@ static int connect_to_server(struct sockaddr_in *address) {
 	/* Open the TCP socket */
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd == -1) {
-		fprintf(stderr, ERRCOLOR "TCP: socket: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, TCPPREFIX ERRPREFIX "socket: %s\n", strerror(errno));
 		return -1;
 	}
 
-	printf(TCPCOLOR "TCP: Connecting to %s:%"PRIu16"...\x1B[0m\n", inet_ntoa(address->sin_addr), ntohs(address->sin_port)); // TODO: change this
+	printf(TCPPREFIX "Connecting to %s:%"PRIu16"...\n", inet_ntoa(address->sin_addr), ntohs(address->sin_port)); // TODO: change this
 	if (connect(fd, (struct sockaddr *)address, sizeof(*address)) == -1) {
-		fprintf(stderr, ERRCOLOR "TCP: connect: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, TCPPREFIX ERRPREFIX "connect: %s\n", strerror(errno));
 		return -1;
 	}
 
-	printf(TCPCOLOR "TCP: Connection successful.\x1B[0m\n");
+	printf(TCPPREFIX "Connection successful.\n");
 	return fd;
 }
 
@@ -138,7 +138,7 @@ void *udp_loop(void *arg) {
 	fds[0].events = POLLIN;
 	int timeout_msecs = 10;
 
-	printf(UDPCOLOR "UDP: Ready to receive blocks.\x1B[0m\n");
+	printf(UDPPREFIX "Ready to receive blocks.\n");
 
 	while (1) {
 		uint64_t pkt_recvcount = 0;
@@ -157,7 +157,7 @@ void *udp_loop(void *arg) {
 		while(1) {
 			int event_count = poll(fds, 1, timeout_msecs);
 			if (event_count == -1) {
-				fprintf(stderr, ERRCOLOR "UDP: poll: %s\x1B[0m\n", strerror(errno));
+				fprintf(stderr, UDPPREFIX ERRPREFIX "poll: %s\n", strerror(errno));
 				exit(errno);
 			} else if (event_count == 0) { /* Timeout */
 				pthread_mutex_lock(&state->lock);
@@ -165,13 +165,13 @@ void *udp_loop(void *arg) {
 					state->status |= UDP_DONE; /* Receive no more blocks */
 					pthread_cond_signal(&state->udp_done);
 					pthread_mutex_unlock(&state->lock);
-					printf(UDPCOLOR "UDP: Received %"PRIu64" blocks this round.\x1B[0m\n", pkt_recvcount);
+					printf(UDPPREFIX "Received %"PRIu64" blocks this round.\n", pkt_recvcount);
 					break;
 				}
 				pthread_mutex_unlock(&state->lock);
 				continue;
 			} else if (!(fds[0].revents & POLLIN)) { /* Weird error from poll occurred */
-				fprintf(stderr, ERRCOLOR "UDP: an unexpected error has occurred.\x1B[0m\n");
+				fprintf(stderr, UDPPREFIX ERRPREFIX "an unexpected error has occurred.\n");
 				exit(EXIT_FAILURE);
 			}
 
@@ -181,7 +181,7 @@ void *udp_loop(void *arg) {
 				if (read_len == -1) {
 					if (errno == EAGAIN || errno == EWOULDBLOCK)
 						break;
-					fprintf(stderr, ERRCOLOR "UDP: recvfrom: %s\x1B[0m\n", strerror(errno));
+					fprintf(stderr, UDPPREFIX ERRPREFIX "recvfrom: %s\n", strerror(errno));
 					exit(1);
 				}
 				pkt_recvcount += 1;
@@ -193,7 +193,7 @@ void *udp_loop(void *arg) {
 					lseek(file_fd, idx * block_len, SEEK_SET);
 					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
 					if (interval > 1 && (pkt_recvcount % interval == 0)) {
-						printf(UDPCOLOR "UDP: Received %"PRIu64" packets so far this round.\x1B[0m\n", pkt_recvcount);
+						printf(UDPPREFIX "Received %"PRIu64" packets so far this round.\n", pkt_recvcount);
 					}
 					set_block_status(idx, state->sack); /* Mark the block as acquired */
 				}
@@ -203,7 +203,7 @@ void *udp_loop(void *arg) {
 		/* Check failure condition */
 		successive_zeros = (pkt_recvcount > 0) ? 0 : successive_zeros + 1;
 		if (successive_zeros > 3) {
-			fprintf(stderr, ERRCOLOR "UDP: 2 rounds in a row with all blocks dropped. Giving up.\x1B[0m\nConsider reducing the blocksize and trying again.\n");
+			fprintf(stderr, UDPPREFIX ERRPREFIX "2 rounds in a row with all blocks dropped. Giving up.\nConsider reducing the blocksize and trying again.\n");
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -224,14 +224,14 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			exit(EXIT_FAILURE);
 		} else if (recv_len == 0) {
 			/* Server closed the connection */
-			fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
+			fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 			exit(EXIT_FAILURE);
 		} else if (!verify_header(&received_complete, PTYPE_COMPLETE)) {
 			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
 			exit(EXIT_FAILURE);
 		}
 
-		printf(TCPCOLOR "TCP: Received \"Complete\" packet from server.\x1B[0m\x1B[0K\n");
+		printf(TCPPREFIX "Received \"Complete\" packet from server.\n");
 
 		/* Update the state */
 		pthread_mutex_lock(&state->lock);
@@ -249,14 +249,14 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			state->status &= ~UDP_DONE;
 			pthread_cond_signal(&state->udp_done);
 			pthread_mutex_unlock(&state->lock);
-			printf(TCPCOLOR "TCP: All blocks received. Cleaning up...\x1B[0m\n");
+			printf(TCPPREFIX "All blocks received. Finishing up...\n");
 			return;
 		} else { /* The transmission continues */
-			printf(TCPCOLOR "TCP: Sending a %s mode ACK packet to the server.\x1B[0m\n", use_nack ? "Negative" : "Selective");
+			printf(TCPPREFIX "Sending a %s mode ACK packet to the server.\n", use_nack ? "Negative" : "Selective");
 			size_t len = sizeof(*ack_pkt) + (ntohl(ack_pkt->length) + 1) * sizeof(uint32_t);
 			int err = send(sock_fd, ack_pkt, len, 0);
 			if (err == -1) {
-				fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
+				fprintf(stderr, TCPPREFIX ERRPREFIX "send: %s\n", strerror(errno));
 				state->status |= TRANSMISSION_OVER;
 				return;
 			}
@@ -289,7 +289,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	/* Create the file */
 	state.file_fd = creat(file_path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 	if (state.file_fd == -1) {
-		perror("open");
+		fprintf(stderr, "open: "ERRPREFIX"%s\n", strerror(errno));
 		return errno;
 	}
 
@@ -311,23 +311,23 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	f_info.blocksize = htons(expected_blocksize - 1);
 	len = send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
 	if (len == -1) {
-		fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, TCPPREFIX ERRPREFIX "send: %s\n", strerror(errno));
 		exit(errno);
 	}
 
 	/* Receive the file size from the server */
 	len = recv(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
 	if (len == -1) {
-		fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, TCPPREFIX ERRPREFIX "recv: %s\n", strerror(errno));
 		exit(errno);
 	} else if (len == 0) {
-		fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
+		fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 		exit(EXIT_FAILURE);
 	}
 
 	/* Make sure the header was correct */
 	if (!verify_header(&f_info.header, PTYPE_FILEINFO)) {
-		fprintf(stderr, ERRCOLOR "TCP: server sent an invalid packet. Expected File Info packet. Aborting.\x1B[0m\n");
+		fprintf(stderr, TCPPREFIX ERRPREFIX "server sent an invalid packet. Expected File Info packet. Aborting.\n");
 		return EINVAL;
 	}
 
@@ -336,7 +336,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	state.f_block = malloc(state.block_packet_len);
 	if (state.f_block == NULL) {
 		/* A fatal error occurred */
-		fprintf(stderr, ERRCOLOR "malloc: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, "malloc: "ERRPREFIX"%s\n", strerror(errno));
 		return errno;
 	}
 
@@ -346,7 +346,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	state.sack = calloc(1, sizeof(ACKPacket_t) + block_status_word_len * sizeof(uint32_t));
 	if (state.sack == NULL) {
 		/* A fatal error occurred */
-		fprintf(stderr, ERRCOLOR "calloc: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, "calloc: "ERRPREFIX"%s\n", strerror(errno));
 		return errno;
 	}
 
@@ -355,7 +355,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	state.sack->header.type = PTYPE_SACK;
 	state.sack->length = htonl(block_status_word_len - 1);
 
-	printf(TCPCOLOR "TCP: The file contains %zu blocks of %zu bytes.\x1B[0m\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
+	printf(TCPPREFIX "The file contains %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
 
 	/* Initialize UDP connection with server */
 	{
@@ -366,17 +366,17 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 		while(1) {
 			err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)server_address, sizeof(*server_address));
 			if (err == -1) {
-				fprintf(stderr, ERRCOLOR "UDP: sendto: %s\x1B[0m\n", strerror(errno));
+				fprintf(stderr, UDPPREFIX ERRPREFIX "sendto: %s\n", strerror(errno));
 				return errno;
 			}
 
 			err = poll(fds, 1, timeout_msecs);
 			if (err == -1) {
-				fprintf(stderr, "\x1B[1;TCP: poll: %s\x1B[0m\n", strerror(errno));
+				fprintf(stderr, TCPPREFIX ERRPREFIX "poll: %s\n", strerror(errno));
 				return errno;
 			} else if (err > 0) {
 				if (!(fds[0].revents & POLLIN)) {
-					fprintf(stderr, ERRCOLOR "TCP: an unexpected error has occurred.\x1B[0m\n");
+					fprintf(stderr, TCPPREFIX ERRPREFIX "an unexpected error has occurred.\n");
 					return 1;
 				}
 
@@ -384,16 +384,16 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 				UDPReadyPacket_t rdy;
 				len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), MSG_WAITALL);
 				if (len == -1) {
-					fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
+					fprintf(stderr, TCPPREFIX ERRPREFIX "recv: %s\n", strerror(errno));
 					return errno;
 				} else if (len == 0) {
-					fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
+					fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 					return 1;
 				}
 				if (verify_header(&rdy, PTYPE_UDPRDY)) {
 					break;
 				}
-				fprintf(stderr, ERRCOLOR "TCP: server sent an invalid packet. Expecting a UDP Ready packet. Aborting\x1B[0m\n");
+				fprintf(stderr, TCPPREFIX ERRPREFIX "server sent an invalid packet. Expecting a UDP Ready packet. Aborting.\n");
 				return EINVAL;
 			}
 		}
@@ -404,7 +404,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err) {
 		errno = err;
-		perror("pthread_create");
+		fprintf(stderr, "pthread_create: "ERRPREFIX"%s\n", strerror(errno));
 		return errno;
 	}
 	tcp_loop(&state, use_nack);
@@ -453,7 +453,7 @@ int main(int argc, char **argv) {
 		switch (c) {
 		case 'b':
 			if (bflag) {
-				fprintf(stderr, "%s: warning: bind address specified multiple times.\n", argv[0]);
+				fprintf(stderr, "%s: "WARNPREFIX"bind address specified multiple times.\n", argv[0]);
 			} else {
 				bflag = true;
 				bind_addr = optarg;
@@ -461,12 +461,12 @@ int main(int argc, char **argv) {
 			break;
 		case 'c':
 			if (cflag) {
-				fprintf(stderr, "%s: warning: blocksize specified multiple times.\n", argv[0]);
+				fprintf(stderr, "%s: "WARNPREFIX"blocksize specified multiple times.\n", argv[0]);
 			} else {
 				cflag = true;
 				blocksize = parse_port(optarg); /* Not really a port, but fits into about the same range */
 				if (errno || blocksize == 0 || blocksize > 4096) {
-					fprintf(stderr, ERRCOLOR "%s: error: invalid blocksize: %s\n", argv[0], optarg);
+					fprintf(stderr, "%s: "ERRPREFIX"invalid blocksize: %s\n", argv[0], optarg);
 					return 1;
 				}
 			}
@@ -484,26 +484,26 @@ int main(int argc, char **argv) {
 				pflag = true;
 				bind_port = parse_port(optarg);
 				if (errno) {
-					fprintf(stderr, ERRCOLOR "%s: error: invalid port specification: %s\n", argv[0], optarg);
+					fprintf(stderr, "%s: "ERRPREFIX"invalid port specification: %s\n", argv[0], optarg);
 					return 1;
 				}
 			}
 			break;
 		case 'P':
 			if (Pflag) {
-				fprintf(stderr, "%s: warning: server port specified multiple times.\n", argv[0]);
+				fprintf(stderr, "%s: "WARNPREFIX"server port specified multiple times.\n", argv[0]);
 			} else {
 				Pflag = true;
 				server_port = parse_port(optarg);
 				if (errno) {
-					fprintf(stderr, ERRCOLOR "%s: error: invalid port specification: %s\n", argv[0], optarg);
+					fprintf(stderr, "%s: "ERRPREFIX"invalid port specification: %s\n", argv[0], optarg);
 					return 1;
 				}
 			}
 			break;
 		case 's':
 			if (sflag) {
-				fprintf(stderr, "%s: warning: server address specified multiple times.\n", argv[0]);
+				fprintf(stderr, "%s: "WARNPREFIX"server address specified multiple times.\n", argv[0]);
 			} else {
 				sflag = true;
 				server_addr = optarg;
@@ -519,7 +519,7 @@ int main(int argc, char **argv) {
 
 	/* Pull the file name */
 	if (optind == argc) {
-		fprintf(stderr, "%s: error, no output file specified.\n"
+		fprintf(stderr, "%s: "ERRPREFIX"no output file specified.\n"
 		                "You have to specify the output file name.\n"
 				"Try '%s -h' for more information.\n", argv[0], argv[0]);
 		return 1;
@@ -529,12 +529,12 @@ int main(int argc, char **argv) {
 	/* Process the IP addresses */
 	bind_address = parse_address(bind_addr, bind_port);
 	if (errno) {
-		fprintf(stderr, ERRCOLOR "UDP: %s is an incorrectly specified address.\x1B[0m\n", bind_addr);
+		fprintf(stderr, UDPPREFIX ERRPREFIX "%s is an incorrectly specified address.\n", bind_addr);
 		exit(errno);
 	}
 	server_address = parse_address(server_addr, server_port);
 	if (errno) {
-		fprintf(stderr, ERRCOLOR "TCP: %s is an incorrectly specified address.\x1B[0m\n", server_addr);
+		fprintf(stderr, UDPPREFIX ERRPREFIX "%s is an incorrectly specified address.\n", server_addr);
 		exit(errno);
 	}
 

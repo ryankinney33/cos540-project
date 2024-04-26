@@ -30,10 +30,10 @@ struct sockaddr_in parse_address(const char *ip_address, uint16_t port) {
 	address.sin_port = htons(port);
 	err = inet_pton(AF_INET, ip_address, &address.sin_addr);
 	if (err == 0) {
-		fprintf(stderr, ERRCOLOR "inet_pton: invalid IP address\n");
+		fprintf(stderr, "inet_pton: "ERRPREFIX"invalid IP address\n");
 		errno = EINVAL;
 	} else if (err == -1) {
-		perror(ERRCOLOR "inet_pton");
+		fprintf(stderr, "inet_pton: "ERRPREFIX"%s\n", strerror(errno));
 	}
 
 	return address;
@@ -62,19 +62,19 @@ int get_socket(struct sockaddr_in *address, int type, bool reuse) {
 	fd = socket(AF_INET, type, 0);
 
 	if (fd == -1) {
-		fprintf(stderr, ERRCOLOR "socket: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, "socket: "ERRPREFIX"%s\n", strerror(errno));
 		return -1;
 	}
 
 	/* Avoid time-wait state on bound sockets if wanted */
 	if (reuse) {
 		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) == -1) {
-			fprintf(stderr, ERRCOLOR "warning: setsockopt failed: %s\x1B[0m\n", strerror(errno)); /* Not a fatal error... */
+			fprintf(stderr, "setsockopt: "WARNPREFIX"%s\n", strerror(errno)); /* Not a fatal error... */
 		}
 	}
 
 	if (bind(fd, (struct sockaddr*)address, sizeof(*address)) == -1) {
-		fprintf(stderr, ERRCOLOR "bind: %s\x1B[0m\n", strerror(errno));
+		fprintf(stderr, "bind: "ERRPREFIX"%s\n", strerror(errno));
 		return -1;
 	}
 

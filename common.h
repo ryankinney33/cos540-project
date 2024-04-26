@@ -65,19 +65,20 @@ struct transmit_state {
 	pthread_mutex_t lock; /* Avoid race conditions */
 	pthread_cond_t udp_done; /* Avoid race conditions */
 	ACKPacket_t *sack; /* Holds the address of the sack packet */
-	FileBlockPacket_t *f_block;
-	size_t num_blocks;
-	int file_fd;
-	int tcp_socket_fd;
-	int udp_socket_fd;
-	WorkerStatus_t status;
-	uint16_t block_packet_len;
+	FileBlockPacket_t *f_block; /* The file block packet the UDP thread sends/receives */
+	size_t num_blocks; /* The number of blocks in the file */
+	int file_fd; /* File descriptor for the file being read from/written to */
+	int tcp_socket_fd; /* Socket descriptor for the TCP connection between server and client */
+	int udp_socket_fd; /* Socket descriptor for the UDP socket used for sending/receiving bloks */
+	WorkerStatus_t status; /* Status flag for the state of the file transmission (no more blocks/transmission is complete, etc.) */
+	uint16_t block_packet_len; /* The length of a file block packet*/
 };
 
-/* Color codes to spice up the programs a bit */
-#define TCPCOLOR "\x1B[1;36m"
-#define UDPCOLOR "\x1B[33m"
-#define ERRCOLOR "\x1B[1;31m"
+/* Colored prefixes to spice up the programs a bit */
+#define TCPPREFIX  "\x1B[1;36mTCP\x1B[0m: "
+#define UDPPREFIX  "\x1B[1;33mUDP\x1B[0m: "
+#define ERRPREFIX  "\x1B[1;31merror\x1B[0m: "
+#define WARNPREFIX "\x1B[1;38;5;5mwarning\x1B[0m: "
 
 /* Global constants */
 extern const CompletePacket_t DONE;
