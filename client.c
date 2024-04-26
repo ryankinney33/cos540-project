@@ -125,7 +125,7 @@ void *udp_loop(void *arg) {
 	int8_t successive_zeros = 0; /* Counts up when a round with 0 blocks occurs */
 
 	struct transmit_state *state = (struct transmit_state*)arg;
-
+	size_t unique_blocks_received = 0;
 	const uint64_t interval = state->num_blocks / 5;
 
 	/* Extract the values from the argument */
@@ -139,7 +139,7 @@ void *udp_loop(void *arg) {
 	struct pollfd fds[1];
 	fds[0].fd = socket_fd;
 	fds[0].events = POLLIN;
-	int timeout_msecs = 10;
+	int timeout_msecs = 100; /* 100 ms timeout for */
 
 	printf(UDPPREFIX "Ready to receive blocks.\n");
 
@@ -189,6 +189,7 @@ void *udp_loop(void *arg) {
 				}
 				pkt_recvcount += 1;
 
+
 				/* Extract index from the block and write to file */
 				off_t idx = ntohl(f_block->index);
 				if (!get_block_status(idx, state->sack)) { /* Only change file if this is a new block */
@@ -199,7 +200,11 @@ void *udp_loop(void *arg) {
 						printf(UDPPREFIX "Received %"PRIu64" packets so far this round.\n", pkt_recvcount);
 					}
 					set_block_status(idx, state->sack); /* Mark the block as acquired */
+					unique_blocks_received += 1;
 				}
+			}
+			if (unique_blocks_received == state->num_blocks) /* Skip timeout if file is complete */ {
+				timeout_msecs = 0;
 			}
 		}
 
