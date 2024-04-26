@@ -1,4 +1,4 @@
-CFLAGS := -Wall -Wextra -g -pipe -std=gnu99
+CFLAGS := -O2 -Wall -Wextra -g -pipe -std=gnu99
 LDLIBS := -lpthread
 
 .PHONY: all clean
