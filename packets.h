@@ -5,11 +5,11 @@
 
 /* Constants used in the control packet header */
 typedef enum PType {
-	UDPRDY,
-	FILEINFO,
-	SACK,
-	NACK,
-	COMPLETE
+	PTYPE_UDPRDY,
+	PTYPE_FILEINFO,
+	PTYPE_SACK,
+	PTYPE_NACK,
+	PTYPE_COMPLETE
 } __attribute__((packed)) PType_t;
 
 /* Control Packet Definitions */
@@ -34,8 +34,8 @@ typedef ControlHeader_t CompletePacket_t; /* Complete Packet */
 typedef ControlHeader_t UDPReadyPacket_t; /* UDP Ready Packet */
 
 /* The default Control Packet Headers */
-#define CONTROL_HEADER_DEFAULT {.head={'P','D','P'}, .type=COMPLETE}
-#define UDP_READY_INITIALIZER {.head={'P', 'D', 'P'}, .type=UDPRDY}
+#define CONTROL_HEADER_DEFAULT {.head={'P','D','P'}, .type=PTYPE_COMPLETE}
+#define UDP_READY_INITIALIZER {.head={'P', 'D', 'P'}, .type=PTYPE_UDPRDY}
 
 /* Data Packet Definition */
 typedef struct FileBlockPacket {

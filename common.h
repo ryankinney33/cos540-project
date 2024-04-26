@@ -45,8 +45,14 @@ static inline bool get_block_status(uint32_t idx, const ACKPacket_t *sack) {
 	return ((sack->ack_stream[idx / 32] & (1 << idx % 32)) != 0);
 }
 
+/* Verifies that the header preamble is correct */
+static inline bool verify_header_preamble(const ControlHeader_t *hdr) {
+	return hdr->head[0] == 'P' && hdr->head[1] == 'D' && hdr->head[2] == 'P';
+}
+
+/* Verifies the header preamble is correct and the packet type matches the expected type */
 static inline bool verify_header(const ControlHeader_t *hdr, PType_t expected_type) {
-	return (hdr->head[0] == 'P' && hdr->head[1] == 'D' && hdr->head[2] == 'P' && hdr->type == expected_type);
+	return verify_header_preamble(hdr) && hdr->type == expected_type;
 }
 
 /* Data types used for the threads of the client and server */
@@ -74,7 +80,7 @@ struct transmit_state {
 #define ERRCOLOR "\x1B[1;31m"
 
 /* Global constants */
-extern const CompletePacket_t done;
-extern const UDPReadyPacket_t ready;
+extern const CompletePacket_t DONE;
+extern const UDPReadyPacket_t READY;
 
 #endif /* COMMON_H */

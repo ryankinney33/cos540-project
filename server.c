@@ -34,8 +34,6 @@
 // #define CLI_TCP_A   "0.0.0.0"
 // #define CLI_TCP_P   27021
 
-/* TODO: check ALL header preambles for correctness */
-
 /*******************************************************************************************/
 /* Private Utility functions                                                               */
 /*******************************************************************************************/
@@ -80,7 +78,7 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_DEFAULT,
 		.num_blocks = htonl(num_blocks - 1),
 		.blocksize = htons(blocksize - 1)};
-	pkt.header.type = FILEINFO;
+	pkt.header.type = PTYPE_FILEINFO;
 
 	return pkt;
 }
@@ -94,7 +92,7 @@ static ssize_t get_next_index(ssize_t previous_index, ACKPacket_t *ack, size_t n
 		return previous_index + 1; /* Don't need to check if final block, since that is handled elsewhere in this case */
 	}
 
-	if (ack->header.type == SACK) {
+	if (ack->header.type == PTYPE_SACK) {
 		for (size_t i = previous_index + 1; i < num_blocks_total; ++i) {
 			if (!get_block_status(i, ack)) { /* TODO: Investigate skipping word if all bits set */
 				return i;
@@ -204,7 +202,7 @@ void tcp_worker(struct transmit_state *state) {
 		free(state->sack); /* We are done with the ack, free it */
 
 		/* Tell the client we are done transmitting blocks */
-		len = send(sock_fd, &done, sizeof(done), 0);
+		len = send(sock_fd, &DONE, sizeof(DONE), 0);
 		if (len == -1) {
 			fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
 			break;
@@ -220,17 +218,23 @@ void tcp_worker(struct transmit_state *state) {
 			exit(EXIT_FAILURE);
 		}
 
-		if (ctrl.type == COMPLETE) { //TODO: real packet verification
+		/* Verify the received packet header */
+		if (!verify_header_preamble(&ctrl)) {
+			fprintf(stderr, ERRCOLOR "TCP: The client sent an invalid packet. Aborting.\x1B[0m\n");
+			exit(EINVAL);
+		}
+
+		if (ctrl.type == PTYPE_COMPLETE) {
 			/* We are done, cleanup */
 			printf(TCPCOLOR "TCP: The client has received all blocks. Cleaning up...\x1B[0m\n");
 			break;
-		} else if (ctrl.type != SACK && ctrl.type != NACK) {
+		} else if (ctrl.type != PTYPE_SACK && ctrl.type != PTYPE_NACK) {
 			/* something went wrong */
-			printf("TCP: The client sent an unexpected packet. Aborting.\n");
+			fprintf(stderr, ERRCOLOR "TCP: The client sent an unexpected packet. Aborting.\x1B[0m\n");
 			exit(EXIT_FAILURE);
 		}
 
-		printf(TCPCOLOR "TCP: Received a %s mode ACK packet from client. Beginning next round.\x1B[0m\n", ctrl.type == SACK ? "Selective" : "Negative");
+		printf(TCPCOLOR "TCP: Received a %s mode ACK packet from client. Beginning next round.\x1B[0m\n", ctrl.type == PTYPE_SACK ? "Selective" : "Negative");
 
 		/* Get the length of the ack stream */
 		len = recv(sock_fd, &ack_stream_length, sizeof(ack_stream_length), 0);
@@ -266,7 +270,7 @@ void tcp_worker(struct transmit_state *state) {
 		}
 
 		/* Convert the packet fields to host order (if NACK) */
-		if (state->sack->header.type == NACK) {
+		if (state->sack->header.type == PTYPE_NACK) {
 			for (size_t i = 0; i <= ack_stream_length; ++i) {
 				state->sack->ack_stream[i] = ntohl(state->sack->ack_stream[i]);
 			}
@@ -348,6 +352,13 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 		fprintf(stderr, ERRCOLOR "TCP: error: the client has unexpectedly closed the connection.\x1B[0m\n");
 		exit(EXIT_FAILURE);
 	}
+
+	/* Verify the correct packet type was received */
+	if (!verify_header(&f_info.header, PTYPE_FILEINFO)) {
+		fprintf(stderr, ERRCOLOR "TCP: The client sent an invalid packet. Aborting.\n");
+		return EINVAL;
+	}
+
 	blocksize = ntohs(f_info.blocksize) + 1;
 
 	/* Build the file information packet with the file size and true blocksize */
@@ -364,7 +375,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 		fprintf(stderr, ERRCOLOR "UDP: recvfrom: %s\x1B[0m\n", strerror(errno));
 		return errno;
 	}
-	if (send(state.tcp_socket_fd, &ready, sizeof(ready), 0) == -1) { /* Tell client we received it */
+	if (send(state.tcp_socket_fd, &READY, sizeof(READY), 0) == -1) { /* Tell client we received it */
 		fprintf(stderr, ERRCOLOR "TCP: send: %s\x1B[0m\n", strerror(errno));
 		return errno;
 	}
@@ -375,6 +386,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 		return errno;
 	}
 
+	/* Allocate the file block data packet according to the blocksize */
 	state.block_packet_len = sizeof(FileBlockPacket_t) + ntohs(f_info.blocksize) + 1;
 	state.f_block = malloc(state.block_packet_len);
 	if (state.f_block == NULL) {
@@ -383,19 +395,20 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 	}
 	state.num_blocks = ntohl(f_info.num_blocks) + 1;
 
+	/* Spawn the UDP thread, and run the file transmission */
 	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err == -1) {
-		perror("pthread_create");
+		fprintf(stderr, ERRCOLOR "pthread_create: %s\x1B[0m\n", strerror(errno));
 		return errno;
 	}
 	tcp_worker(&state);
-	pthread_join(udp_tid, NULL);
 
+	/* Cleanup */
+	pthread_join(udp_tid, NULL);
 	close(state.tcp_socket_fd);
 	close(state.udp_socket_fd);
 	close(serv_tcp_fd);
 	close(state.file_fd);
-
 	return 0;
 }
 

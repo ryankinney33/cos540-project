@@ -36,8 +36,6 @@
 // #define CLI_TCP_A   "0.0.0.0"
 // #define CLI_TCP_P   27021
 
-/* TODO: check ALL header preambles for correctness */
-
 /*******************************************************************************************/
 /* Private Utility functions                                                               */
 /*******************************************************************************************/
@@ -88,7 +86,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_
 			pkt->header.head[0] = 'P';
 			pkt->header.head[1] = 'D';
 			pkt->header.head[0] = 'P';
-			pkt->header.type = NACK;
+			pkt->header.type = PTYPE_NACK;
 
 			/* Set the length */
 			pkt->length = htonl(ack_stream_len - 1);
@@ -228,7 +226,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			/* Server closed the connection */
 			fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
 			exit(EXIT_FAILURE);
-		} else if (received_complete.type != COMPLETE) { //TODO: change this
+		} else if (!verify_header(&received_complete, PTYPE_COMPLETE)) {
 			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
 			exit(EXIT_FAILURE);
 		}
@@ -246,7 +244,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 		ack_pkt = build_ACK_packet(use_nack, state->sack, state->num_blocks);
 		if (ack_pkt == NULL) { /* Check if the transmission is complete */
 			/* Send the complete message to the server */
-			send(sock_fd, &done, sizeof(done), 0);
+			send(sock_fd, &DONE, sizeof(DONE), 0);
 			state->status |= TRANSMISSION_OVER;
 			state->status &= ~UDP_DONE;
 			pthread_cond_signal(&state->udp_done);
@@ -308,7 +306,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	f_info.header.head[0] = 'P';
 	f_info.header.head[1] = 'D';
 	f_info.header.head[2] = 'P';
-	f_info.header.type = FILEINFO;
+	f_info.header.type = PTYPE_FILEINFO;
 	f_info.num_blocks = 0;
 	f_info.blocksize = htons(expected_blocksize - 1);
 	len = send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
@@ -325,6 +323,12 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	} else if (len == 0) {
 		fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
 		exit(EXIT_FAILURE);
+	}
+
+	/* Make sure the header was correct */
+	if (!verify_header(&f_info.header, PTYPE_FILEINFO)) {
+		fprintf(stderr, ERRCOLOR "TCP: server sent an invalid packet. Expected File Info packet. Aborting.\x1B[0m\n");
+		return EINVAL;
 	}
 
 	state.block_packet_len = ntohs(f_info.blocksize) + 1 + sizeof(FileBlockPacket_t);
@@ -347,8 +351,8 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	}
 
 	/* Fill in the fields of the SACK packet */
-	state.sack->header = done;
-	state.sack->header.type = SACK;
+	state.sack->header = DONE;
+	state.sack->header.type = PTYPE_SACK;
 	state.sack->length = htonl(block_status_word_len - 1);
 
 	printf(TCPCOLOR "TCP: The file contains %zu blocks of %zu bytes.\x1B[0m\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
@@ -373,37 +377,40 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 			} else if (err > 0) {
 				if (!(fds[0].revents & POLLIN)) {
 					fprintf(stderr, ERRCOLOR "TCP: an unexpected error has occurred.\x1B[0m\n");
-					exit(EXIT_FAILURE);
+					return 1;
 				}
+
 				/* Read the data */
 				UDPReadyPacket_t rdy;
-				len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), 0);
+				len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), MSG_WAITALL);
 				if (len == -1) {
 					fprintf(stderr, ERRCOLOR "TCP: recv: %s\x1B[0m\n", strerror(errno));
-					exit(errno);
+					return errno;
 				} else if (len == 0) {
 					fprintf(stderr, ERRCOLOR "TCP: server unexpectedly closed connection.\x1B[0m\n");
-					exit(EXIT_FAILURE);
+					return 1;
 				}
-				break; //FIXME: do a real check
+				if (verify_header(&rdy, PTYPE_UDPRDY)) {
+					break;
+				}
+				fprintf(stderr, ERRCOLOR "TCP: server sent an invalid packet. Expecting a UDP Ready packet. Aborting\x1B[0m\n");
+				return EINVAL;
 			}
 		}
 	}
 	putchar('\n');
 
-	/* Spawn the UDP thread */
+	/* Begin file transmission */
 	err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err) {
 		errno = err;
 		perror("pthread_create");
 		return errno;
 	}
-
-	/* Begin TCP thread loop */
 	tcp_loop(&state, use_nack);
 
+	/* Cleanup */
 	pthread_join(udp_tid, NULL);
-
 	close(state.tcp_socket_fd);
 	close(state.udp_socket_fd);
 	close(state.file_fd);

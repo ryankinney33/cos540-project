@@ -25,8 +25,8 @@ grade in COS 540.
 --------------------
 1. Server opens listening TCP socket and waits for connection
 2. Client connects to server.
-3. Client sends a File Information packet with num_blocks set to 0 and
-   the blocksize set to the expected size.
+3. Client sends a File Information packet with the blocksize field set
+   to the wanted blocksize size.
 4. Server determines minimum possible blocksize from the file size and
    expected blocksize, the number of blocks, and sends the File
    Information packet back to the client with the true blocksize and
