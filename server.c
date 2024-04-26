@@ -131,8 +131,12 @@ static void *udp_loop(void *arg) {
 			}
 
 			/* Go to the correct offset in file */
-			if (state->sack != NULL)
-				lseek(file_fd, blocksize * block_idx, SEEK_SET); /* should probably error check this, but oh well */
+			if (state->sack != NULL) {
+				if (lseek(file_fd, blocksize * block_idx, SEEK_SET) == -1) {
+					fprintf(stderr, UDPPREFIX ERRPREFIX "lseek: %s\n", strerror(errno));
+					exit(errno);
+				}
+			}
 
 			/* This automatically handles the size of the final block */
 			num_read = read(file_fd, send_buf->data_stream, blocksize);

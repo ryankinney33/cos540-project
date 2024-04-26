@@ -121,7 +121,7 @@ static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_
 
 /* UDP thread: Read blocks of data from the UDP socket and write them to the file. */
 void *udp_loop(void *arg) {
-	ssize_t read_len;
+	ssize_t len;
 	int8_t successive_zeros = 0; /* Counts up when a round with 0 blocks occurs */
 
 	struct transmit_state *state = (struct transmit_state*)arg;
@@ -180,8 +180,8 @@ void *udp_loop(void *arg) {
 
 			/* Read all available data */
 			while(1) {
-				read_len = recvfrom(fds[0].fd, f_block, block_packet_len, 0, NULL, NULL); /* Read data until we get EWOULDBLOCK or EAGAIN */
-				if (read_len == -1) {
+				len = recvfrom(fds[0].fd, f_block, block_packet_len, 0, NULL, NULL); /* Read data until we get EWOULDBLOCK or EAGAIN */
+				if (len == -1) {
 					if (errno == EAGAIN || errno == EWOULDBLOCK)
 						break;
 					fprintf(stderr, UDPPREFIX ERRPREFIX "recvfrom: %s\n", strerror(errno));
@@ -194,8 +194,16 @@ void *udp_loop(void *arg) {
 				off_t idx = ntohl(f_block->index);
 				if (!get_block_status(idx, state->sack)) { /* Only change file if this is a new block */
 					/* Set file position and write the block to the file */
-					lseek(file_fd, idx * block_len, SEEK_SET);
-					write(file_fd, f_block->data_stream, read_len - sizeof(*f_block));
+					off_t err = lseek(file_fd, idx * block_len, SEEK_SET);
+					if (err == -1) {
+						fprintf(stderr, UDPPREFIX ERRPREFIX "lseek: %s\n", strerror(errno));
+						exit(errno);
+					}
+					len = write(file_fd, f_block->data_stream, len - sizeof(*f_block));
+					if (len == -1) {
+						fprintf(stderr, UDPPREFIX ERRPREFIX "write: %s\n", strerror(errno));
+						exit(errno);
+					}
 					if (interval > 1 && (pkt_recvcount % interval == 0)) {
 						printf(UDPPREFIX "Received %"PRIu64" packets so far this round.\n", pkt_recvcount);
 					}
