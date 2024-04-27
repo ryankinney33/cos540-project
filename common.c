@@ -6,8 +6,8 @@
 #include <arpa/inet.h>
 
 /* Global constants */
-const CompletePacket_t DONE = CONTROL_HEADER_INITIALIZER(PTYPE_COMPLETE);
-const UDPReadyPacket_t READY = CONTROL_HEADER_INITIALIZER(PTYPE_UDPRDY);
+const CompletePacket_t DONE = {.header = CTRL_HEADER_INITIALIZER(PTYPE_COMPLETE)};
+const UDPReadyPacket_t READY = {.header = CTRL_HEADER_INITIALIZER(PTYPE_UDPRDY)};
 
 uint16_t parse_port(const char *port_str) {
 	errno = 0;

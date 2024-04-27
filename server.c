@@ -38,7 +38,7 @@
 /* Private Utility functions                                                               */
 /*******************************************************************************************/
 
-/* Gets the file information */
+/* Gets the file information. On error, sets the blocksize to UINT16_MAX and number of blocks to UINT32_MAX */
 FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	struct stat statbuf;
 	int err = fstat(fd, &statbuf);
@@ -75,7 +75,7 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 
 	printf(TCPPREFIX "The file contains %"PRIu64" blocks of %"PRIu16" bytes.\n", num_blocks, blocksize);
 
-	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_INITIALIZER(PTYPE_FILEINFO),
+	FileInformationPacket_t pkt = {.header=CTRL_HEADER_INITIALIZER(PTYPE_FILEINFO),
 		.num_blocks = htonl(num_blocks - 1),
 		.blocksize = htons(blocksize - 1)};
 

@@ -80,13 +80,11 @@ static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_
 		if (isNack) {
 			/* Construct the NACK packet to be sent to the server */
 			pkt = malloc(sizeof(ACKPacket_t) + ack_stream_len * sizeof(uint32_t));
-			if (pkt == NULL) {
-				errno = ENOMEM;
+			if (pkt == NULL)
 				return NULL;
-			}
 
 			/* Create header */
-			control_header_init(&pkt->header, PTYPE_NACK);
+			ctrl_header_init(&pkt->header, PTYPE_NACK);
 
 			/* Set the length */
 			pkt->length = htonl(ack_stream_len - 1);
@@ -160,13 +158,8 @@ void *udp_loop(void *arg) {
 				exit(errno);
 			} else if (event_count == 0) { /* Timeout */
 				pthread_mutex_lock(&state->lock);
-				if (state->status & TCP_DONE_RECEIVED) { /* Check if the TCP thread has flagged completion */
-					state->status |= UDP_DONE; /* Receive no more blocks */
-					pthread_cond_signal(&state->udp_done);
-					pthread_mutex_unlock(&state->lock);
-					printf(UDPPREFIX "Received \x1B[4m%"PRIu64"\x1B[0m blocks this round.\n", pkt_recvcount);
+				if (state->status & TCP_DONE_RECEIVED) /* Check if the TCP thread has flagged completion */
 					break;
-				}
 				pthread_mutex_unlock(&state->lock);
 				continue;
 			} else if (!(fds[0].revents & POLLIN)) { /* Weird error from poll occurred */
@@ -204,17 +197,28 @@ void *udp_loop(void *arg) {
 					unique_blocks_received += 1;
 				}
 			}
-			if (unique_blocks_received == state->num_blocks) /* Skip timeout if file is complete */ {
-				timeout_msecs = 0;
+			if (unique_blocks_received == state->num_blocks) { /* Finish up if file is complete */
+				pthread_mutex_lock(&state->lock);
+				break;
 			}
 		}
 
+		/* Round is done */
+		state->status |= UDP_DONE;
+		printf(UDPPREFIX "Received \x1B[4m%"PRIu64"\x1B[0m blocks this round.\n", pkt_recvcount);
+
 		/* Check failure condition */
 		successive_zeros = (pkt_recvcount > 0) ? 0 : successive_zeros + 1;
-		if (successive_zeros > 3) {
-			fprintf(stderr, UDPPREFIX ERRPREFIX "2 rounds in a row with all blocks dropped. Giving up.\nConsider reducing the blocksize and trying again.\n");
+		if (successive_zeros == 2) {
+			fprintf(stderr, UDPPREFIX WARNPREFIX"The blocksize may be too large. Consider reducing it and trying again.\n"
+			                UDPPREFIX ERRPREFIX "2 rounds in a row with all blocks dropped. Giving up.\n"
+				);
 			exit(EXIT_FAILURE);
 		}
+
+		/* Signal to the TCP thread we are done */
+		pthread_cond_signal(&state->udp_done);
+		pthread_mutex_unlock(&state->lock);
 	}
 	return NULL;
 }
@@ -235,7 +239,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			/* Server closed the connection */
 			fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 			exit(EXIT_FAILURE);
-		} else if (!verify_header(&received_complete, PTYPE_COMPLETE)) {
+		} else if (!verify_header(&received_complete.header, PTYPE_COMPLETE)) {
 			fprintf(stderr, TCPPREFIX ERRPREFIX "Received unexpected packet from server. Aborting.\n");
 			exit(EXIT_FAILURE);
 		}
@@ -285,7 +289,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 /* Prepares and runs the transmission */
 int run_transmission(const char *file_path, struct sockaddr_in *bind_address, struct sockaddr_in *server_address, bool use_nack, uint16_t expected_blocksize) {
 	/* Packets */
-	FileInformationPacket_t f_info = {.header=CONTROL_HEADER_INITIALIZER(PTYPE_FILEINFO)};
+	FileInformationPacket_t f_info = {.header=CTRL_HEADER_INITIALIZER(PTYPE_FILEINFO)};
 
 	/* Thread state */
 	int err;
@@ -356,7 +360,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	}
 
 	/* Fill in the fields of the SACK packet */
-	control_header_init(&state.sack->header, PTYPE_SACK);
+	ctrl_header_init(&state.sack->header, PTYPE_SACK);
 	state.sack->length = htonl(block_status_word_len - 1);
 
 	printf(TCPPREFIX "The file contains %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
@@ -394,9 +398,8 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 					fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 					return 1;
 				}
-				if (verify_header(&rdy, PTYPE_UDPRDY)) {
+				if (verify_header(&rdy.header, PTYPE_UDPRDY))
 					break;
-				}
 				fprintf(stderr, TCPPREFIX ERRPREFIX "server sent an invalid packet. Expecting a UDP Ready packet. Aborting.\n");
 				return EINVAL;
 			}
@@ -406,9 +409,8 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	/* Begin file transmission */
 	err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err) {
-		errno = err;
-		fprintf(stderr, "pthread_create: "ERRPREFIX"%s\n", strerror(errno));
-		return errno;
+		fprintf(stderr, "pthread_create: "ERRPREFIX"%s\n", strerror(err));
+		return err;
 	}
 	tcp_loop(&state, use_nack);
 
@@ -451,7 +453,7 @@ int main(int argc, char **argv) {
 		"\n"
 		"The file transmission is completed according to RFC COS540.\n";
 
-	/* Process command line arguments*/
+	/* Process command line arguments */
 	while ((c = getopt(argc, argv, "b:c:hnp:P:s:")) != -1) {
 		switch (c) {
 		case 'b':

@@ -82,7 +82,7 @@ struct transmit_state {
 	int tcp_socket_fd; /* Socket descriptor for the TCP connection between server and client */
 	int udp_socket_fd; /* Socket descriptor for the UDP socket used for sending/receiving bloks */
 	WorkerStatus_t status; /* Status flag for the state of the file transmission (no more blocks/transmission is complete, etc.) */
-	uint16_t block_packet_len; /* The length of a file block packet*/
+	uint16_t block_packet_len; /* The length of a file block packet */
 };
 
 /*******************************/
