@@ -123,7 +123,6 @@ void *udp_loop(void *arg) {
 
 	struct transmit_state *state = (struct transmit_state*)arg;
 	size_t unique_blocks_received = 0;
-	const uint64_t interval = state->num_blocks / 5;
 
 	/* Extract the values from the argument */
 	const int file_fd = state->file_fd;
@@ -138,8 +137,6 @@ void *udp_loop(void *arg) {
 	fds[0].events = POLLIN;
 	int timeout_msecs = 100; /* 100 ms timeout for poll */
 
-	printf(UDPPREFIX "Ready to receive blocks.\n");
-
 	while (1) {
 		uint64_t pkt_recvcount = 0;
 
@@ -153,6 +150,8 @@ void *udp_loop(void *arg) {
 		}
 		pthread_mutex_unlock(&state->lock); /* We don't need to hold the lock now */
 
+		printf("\n"UDPPREFIX"Listening for blocks.\n");
+
 		/* Round begins, receive blocks and write to file */
 		while(1) {
 			int event_count = poll(fds, 1, timeout_msecs);
@@ -165,7 +164,7 @@ void *udp_loop(void *arg) {
 					state->status |= UDP_DONE; /* Receive no more blocks */
 					pthread_cond_signal(&state->udp_done);
 					pthread_mutex_unlock(&state->lock);
-					printf(UDPPREFIX "Received %"PRIu64" blocks this round.\n", pkt_recvcount);
+					printf(UDPPREFIX "Received \x1B[4m%"PRIu64"\x1B[0m blocks this round.\n", pkt_recvcount);
 					break;
 				}
 				pthread_mutex_unlock(&state->lock);
@@ -200,9 +199,6 @@ void *udp_loop(void *arg) {
 					if (len == -1) {
 						fprintf(stderr, UDPPREFIX ERRPREFIX "write: %s\n", strerror(errno));
 						exit(errno);
-					}
-					if (interval > 1 && (pkt_recvcount % interval == 0)) {
-						printf(UDPPREFIX "Received %"PRIu64" packets so far this round.\n", pkt_recvcount);
 					}
 					set_block_status(idx, state->sack); /* Mark the block as acquired */
 					unique_blocks_received += 1;
@@ -406,7 +402,6 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 			}
 		}
 	}
-	putchar('\n');
 
 	/* Begin file transmission */
 	err = pthread_create(&udp_tid, NULL, udp_loop, &state);

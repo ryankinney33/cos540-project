@@ -116,12 +116,11 @@ static void *udp_loop(void *arg) {
 	const int socket_fd = state->udp_socket_fd;
 	const uint16_t blocksize = state->block_packet_len - sizeof(FileBlockPacket_t);
 
-	printf(UDPPREFIX "Ready to send blocks.\n");
-
 	while(1) {
 		uint64_t num_blocks_sent = 0;
 		ssize_t num_read, num_sent, block_idx = -1;
 
+		printf("\n"UDPPREFIX"Sending blocks to client.\n");
 		do {
 			/* Go to the next block index in the file */
 			block_idx = get_next_index(state->sack, num_blocks, block_idx, num_blocks_sent);
@@ -160,7 +159,7 @@ static void *udp_loop(void *arg) {
 			num_blocks_sent += 1;
 		} while (num_read == blocksize); /* Stop sending if we read the last block */
 
-		printf(UDPPREFIX "Sent %"PRIu64" blocks to client.\n", num_blocks_sent);
+		printf(UDPPREFIX "Sent \x1B[4m%"PRIu64"\x1B[0m blocks to client.\n", num_blocks_sent);
 
 		/* Signal we are finished and wait for the TCP thread */
 		pthread_mutex_lock(&state->lock);
@@ -200,12 +199,16 @@ void tcp_worker(struct transmit_state *state) {
 		}
 		free(state->sack); /* We are done with the ack, free it */
 
+		printf(TCPPREFIX "Sending a \"Complete\" packet to the client.\n");
+
 		/* Tell the client we are done transmitting blocks */
 		len = send(sock_fd, &DONE, sizeof(DONE), 0);
 		if (len == -1) {
 			fprintf(stderr, TCPPREFIX ERRPREFIX "send: %s\n", strerror(errno));
 			break;
 		}
+
+		printf(TCPPREFIX"Waiting for a response from the client.\n");
 
 		/* Receive the control header */
 		len = recv(sock_fd, &ctrl, sizeof(ctrl), 0);
@@ -392,8 +395,6 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 		return errno;
 	}
 	state.num_blocks = ntohl(f_info.num_blocks) + 1;
-
-	putchar('\n');
 
 	/* Spawn the UDP thread, and run the file transmission */
 	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);
