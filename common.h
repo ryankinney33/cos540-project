@@ -9,6 +9,10 @@
 
 #include "packets.h"
 
+/***********************************/
+/* Function declarations           */
+/***********************************/
+
 /*
  * Extracts and validates the port number stored in a port_str.
  * Returns 0 and updates errno on error.
@@ -21,12 +25,13 @@ uint16_t parse_port(const char *port_str);
  */
 struct sockaddr_in parse_address(const char *ip_address, uint16_t port);
 
-/* Finds the number of blocks missing */
+/* Finds the number of blocks missing from the SACK */
 size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks);
 
 /*
- * Opens a UDP socket and binds to an address.
- * Returns the file descriptor for the socket.
+ * Opens a socket according to the wanted type and binds it to the address.
+ * Returns the file descriptor for the socket. If reuse is set, SO_REUSEADDR
+ * is set for the socket.
  */
 int get_socket(struct sockaddr_in *address, int type, bool reuse);
 
@@ -55,12 +60,18 @@ static inline bool verify_header(const ControlHeader_t *hdr, PType_t expected_ty
 	return verify_header_preamble(hdr) && hdr->type == expected_type;
 }
 
-/* Data types used for the threads of the client and server */
+/*****************************/
+/* Data types                */
+/*****************************/
+
+/* Status flags for the TCP and UDP workers */
 typedef enum WorkerStatus {
 	UDP_DONE = 1 << 0, /* Set when the UDP thread is done receiving/sending blocks (client/server) */
 	TRANSMISSION_OVER = 1 << 1, /* Set when every block was successfully transmitted (client/server) */
 	TCP_DONE_RECEIVED = 1 << 2, /* Set when the TCP thread receives a Complete packet from server (client only) */
 } WorkerStatus_t;
+
+/* All state needed for the file transmission threads */
 struct transmit_state {
 	pthread_mutex_t lock; /* Avoid race conditions */
 	pthread_cond_t udp_done; /* Avoid race conditions */
@@ -74,14 +85,16 @@ struct transmit_state {
 	uint16_t block_packet_len; /* The length of a file block packet*/
 };
 
-/* Colored prefixes to spice up the programs a bit */
-#define TCPPREFIX  "\x1B[1;36mTCP\x1B[0m: "
-#define UDPPREFIX  "\x1B[1;33mUDP\x1B[0m: "
-#define ERRPREFIX  "\x1B[1;31merror\x1B[0m: "
-#define WARNPREFIX "\x1B[1;38;5;5mwarning\x1B[0m: "
+/*******************************/
+/* Global constants            */
+/*******************************/
 
-/* Global constants */
-extern const CompletePacket_t DONE;
-extern const UDPReadyPacket_t READY;
+#define TCPPREFIX  "\x1B[1;36mTCP\x1B[0m: " /* prefix for TCP thread messages */
+#define UDPPREFIX  "\x1B[1;33mUDP\x1B[0m: " /* prefix for UDP thread messages */
+#define ERRPREFIX  "\x1B[1;31merror\x1B[0m: " /* prefix for error messages */
+#define WARNPREFIX "\x1B[1;38;5;5mwarning\x1B[0m: " /* prefix for warning messages */
+
+extern const CompletePacket_t DONE; /* Global constant "Complete" packet */
+extern const UDPReadyPacket_t READY; /* Global constant "UDP Ready" packet */
 
 #endif /* COMMON_H */

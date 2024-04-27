@@ -6,14 +6,14 @@
 #include <arpa/inet.h>
 
 /* Global constants */
-const CompletePacket_t DONE = CONTROL_HEADER_DEFAULT;
-const UDPReadyPacket_t READY = UDP_READY_INITIALIZER;
+const CompletePacket_t DONE = CONTROL_HEADER_INITIALIZER(PTYPE_COMPLETE);
+const UDPReadyPacket_t READY = CONTROL_HEADER_INITIALIZER(PTYPE_UDPRDY);
 
 uint16_t parse_port(const char *port_str) {
 	errno = 0;
 	char *ptr;
 	unsigned long tmp = strtoul(port_str, &ptr, 0);
-	if (errno || *ptr || tmp > UINT16_MAX) {
+	if (errno || *ptr || tmp > UINT16_MAX) { /* Check if legal */
 		if (!errno)
 			errno = EINVAL;
 		return 0;
@@ -39,7 +39,6 @@ struct sockaddr_in parse_address(const char *ip_address, uint16_t port) {
 	return address;
 }
 
-/* Finds the number of blocks missing */
 size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
 	size_t count = 0; /* Counts the number of blocks received */
 
@@ -48,19 +47,15 @@ size_t get_num_missing(const ACKPacket_t *sack, size_t num_blocks) {
 		count += __builtin_popcount(sack->ack_stream[idx]);
 	}
 
+	/* Total bits - set bits = number of missing blocks */
 	return num_blocks - count;
 }
 
-/*
- * Opens a socket and binds it to the address.
- * Returns the file descriptor for the socket.
- */
 int get_socket(struct sockaddr_in *address, int type, bool reuse) {
 	int fd;
-	// struct sockaddr_in address;
 
+	/* Open the wanted socket */
 	fd = socket(AF_INET, type, 0);
-
 	if (fd == -1) {
 		fprintf(stderr, "socket: "ERRPREFIX"%s\n", strerror(errno));
 		return -1;
@@ -73,10 +68,10 @@ int get_socket(struct sockaddr_in *address, int type, bool reuse) {
 		}
 	}
 
+	/* Attempt to bind the socket to the wanted address */
 	if (bind(fd, (struct sockaddr*)address, sizeof(*address)) == -1) {
 		fprintf(stderr, "bind: "ERRPREFIX"%s\n", strerror(errno));
 		return -1;
 	}
-
 	return fd;
 }

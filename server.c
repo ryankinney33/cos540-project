@@ -54,7 +54,7 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 	}
 
 	/* See if the blocksize is possible */
-	if (num_blocks > UINT32_MAX) {
+	if (num_blocks > UINT32_MAX + 1UL) {
 		fprintf(stderr, "get_fileinfo: "WARNPREFIX"a blocksize of %"PRIu16" is too small. Increasing.\n", blocksize);
 
 		/* Attempt to get a new blocksize */
@@ -73,18 +73,17 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 		}
 	}
 
-	printf(TCPPREFIX "The file contains %"PRIu64" blocks of %"PRIu16" bytes.\n\n", num_blocks, blocksize);
+	printf(TCPPREFIX "The file contains %"PRIu64" blocks of %"PRIu16" bytes.\n", num_blocks, blocksize);
 
-	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_DEFAULT,
+	FileInformationPacket_t pkt = {.header=CONTROL_HEADER_INITIALIZER(PTYPE_FILEINFO),
 		.num_blocks = htonl(num_blocks - 1),
 		.blocksize = htons(blocksize - 1)};
-	pkt.header.type = PTYPE_FILEINFO;
 
 	return pkt;
 }
 
 /*
- * Gets the next block index to send to client.
+ * Gets the index of the next block to send to the client.
  * Returns -1 if there are no more blocks to send
  */
 static ssize_t get_next_index(ACKPacket_t *ack, size_t num_blocks_total, ssize_t previous_index, uint64_t pkt_sendcount) {
@@ -393,6 +392,8 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 		return errno;
 	}
 	state.num_blocks = ntohl(f_info.num_blocks) + 1;
+
+	putchar('\n');
 
 	/* Spawn the UDP thread, and run the file transmission */
 	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);

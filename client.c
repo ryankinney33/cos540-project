@@ -26,7 +26,7 @@
 #include "packets.h"
 #include "common.h"
 
-/* Defaults. Overridden command line arguments. */
+/* Defaults. Overridden by command line arguments. */
 #define SRV_TCP_A   "127.0.0.1"
 #define SRV_TCP_P   8888
 #define CLI_UDP_A   "0.0.0.0"
@@ -85,11 +85,8 @@ static ACKPacket_t *build_ACK_packet(bool isNack, ACKPacket_t *sack, const size_
 				return NULL;
 			}
 
-			/* Create preamble */
-			pkt->header.head[0] = 'P';
-			pkt->header.head[1] = 'D';
-			pkt->header.head[2] = 'P';
-			pkt->header.type = PTYPE_NACK;
+			/* Create header */
+			control_header_init(&pkt->header, PTYPE_NACK);
 
 			/* Set the length */
 			pkt->length = htonl(ack_stream_len - 1);
@@ -139,7 +136,7 @@ void *udp_loop(void *arg) {
 	struct pollfd fds[1];
 	fds[0].fd = socket_fd;
 	fds[0].events = POLLIN;
-	int timeout_msecs = 100; /* 100 ms timeout for */
+	int timeout_msecs = 100; /* 100 ms timeout for poll */
 
 	printf(UDPPREFIX "Ready to receive blocks.\n");
 
@@ -243,7 +240,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 			fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 			exit(EXIT_FAILURE);
 		} else if (!verify_header(&received_complete, PTYPE_COMPLETE)) {
-			fprintf(stderr, "Received unexpected packet from server. Aborting.\n");
+			fprintf(stderr, TCPPREFIX ERRPREFIX "Received unexpected packet from server. Aborting.\n");
 			exit(EXIT_FAILURE);
 		}
 
@@ -292,7 +289,7 @@ void tcp_loop(struct transmit_state *state, bool use_nack) {
 /* Prepares and runs the transmission */
 int run_transmission(const char *file_path, struct sockaddr_in *bind_address, struct sockaddr_in *server_address, bool use_nack, uint16_t expected_blocksize) {
 	/* Packets */
-	FileInformationPacket_t f_info;
+	FileInformationPacket_t f_info = {.header=CONTROL_HEADER_INITIALIZER(PTYPE_FILEINFO)};
 
 	/* Thread state */
 	int err;
@@ -319,10 +316,6 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	}
 
 	/* Send the wanted blocksize to the server */
-	f_info.header.head[0] = 'P';
-	f_info.header.head[1] = 'D';
-	f_info.header.head[2] = 'P';
-	f_info.header.type = PTYPE_FILEINFO;
 	f_info.num_blocks = 0;
 	f_info.blocksize = htons(expected_blocksize - 1);
 	len = send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
@@ -367,8 +360,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	}
 
 	/* Fill in the fields of the SACK packet */
-	state.sack->header = DONE;
-	state.sack->header.type = PTYPE_SACK;
+	control_header_init(&state.sack->header, PTYPE_SACK);
 	state.sack->length = htonl(block_status_word_len - 1);
 
 	printf(TCPPREFIX "The file contains %zu blocks of %zu bytes.\n", state.num_blocks, state.block_packet_len - sizeof(FileBlockPacket_t));
@@ -495,7 +487,7 @@ int main(int argc, char **argv) {
 			break;
 		case 'p':
 			if (pflag) {
-				fprintf(stderr, "%s: warning: binding port specified multiple times.\n", argv[0]);
+				fprintf(stderr, "%s: "WARNPREFIX"binding port specified multiple times.\n", argv[0]);
 			} else {
 				pflag = true;
 				bind_port = parse_port(optarg);
@@ -554,7 +546,5 @@ int main(int argc, char **argv) {
 		exit(errno);
 	}
 
-	run_transmission(file_path, &bind_address, &server_address, use_nack, blocksize);
-
-	return 0;
+	return run_transmission(file_path, &bind_address, &server_address, use_nack, blocksize);
 }

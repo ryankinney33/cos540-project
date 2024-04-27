@@ -1,6 +1,6 @@
 RFC: COS540                                                   R. Kinney
                                                     University of Maine
-                                                          26 April 2024
+                                                          28 April 2024
 
                    Problematic Data Protocol 11
 
@@ -172,7 +172,7 @@ Ack Stream: variable
   corresponding to an offset of 0 from the octet index. An example is
   shown below.
 
-    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    0                               1
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
    |7|6|5|4|3|2|1|0|F|E|D|C|B|A|9|8|7|6|5|4|3|2|1|0|F|E|D|C|B|A|9|8|
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
