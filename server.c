@@ -28,6 +28,9 @@
 #define SRV_TCP_A   "0.0.0.0"
 #define SRV_TCP_P   8888
 
+/* Maximum transfer filesize. If the file is smaller than this, the actual transmission size will be less */
+#define FILE_SIZE_MAX ((1L<<33) - 1) * 4096
+
 /* These are not used... */
 #define CLI_UDP_P   8888
 #define CLI_UDP_A   "127.0.0.1"
@@ -47,7 +50,7 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 		exit(errno); /* A fatal error occurred... */
 	}
 
-	off_t fsize = statbuf.st_size;
+	off_t fsize = (statbuf.st_size > FILE_SIZE_MAX) ? FILE_SIZE_MAX : statbuf.st_size;
 	uint64_t num_blocks = fsize / blocksize;
 	if (fsize % blocksize) { /* fix if there is remaining data */
 		num_blocks += 1;
