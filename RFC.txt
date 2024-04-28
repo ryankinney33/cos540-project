@@ -135,10 +135,19 @@ its tracker and begin a new round.
 
 2.3.2 Client Rounds
 -------------------
-In each round, the client receives File Blocks packets from the server.
+In each round, the client receives File Block packets from the server.
 When a File Block is received, the client should update its tracker to
 know which blocks are still missing. It should then write the data in
-packet to the file at the offset determine by the block index and blocksize.
+packet to the file at the offset determined by the block index and
+blocksize.
+
+The client should receive File Block packets until it receives a
+Complete packet from the server. Once the Complete packet is received,
+the client should finish processing any File Blocks it has already
+received then determine how many blocks were missed. If a block was
+missed, the client should send an ACK packet and start another round.
+Otherwise, the client should send a Compelte packet to the server,
+saying that it has received all blocks and is closing its connections.
 
 3 Packet Format Specification
 =============================
