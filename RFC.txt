@@ -15,44 +15,58 @@ for control information and the User Datagram Protocol (UDP) for data
 transmission. The motivation behind this protocol is to get a good
 grade in COS 540.
 
-2 Overview
-==========
+2 Functional Specification
+==========================
+This section described in detail what messages are sent and the actions
+the client/server must take upon receipt. Section 2.1 gives a high-
+level overview of communication flow. Section 2.2 gives a more detailed
+view of the protocol initialization. Section 2.3 gives describes the
+file transmission. All referenced packet definitions are described in
+Section 3.
 
-2.1 Protocol Operation
-----------------------
+2.1 High-level Protocol Operation
+---------------------------------
+The protocol consists of two sections, initialization, and file
+transmission. In the initialization section, the client and server open
+connections and set up the state for the file transfer. In the file
+transmission section, the server sends blocks to the client, and the
+client receives them. When no more blocks are to be sent, the server
+sends a message to the client, and the client responds with an
+acknowledgement. When the client has received all the blocks, it sends
+a message to the server saying it is complete, and all connections are
+closed.
 
-2.1.1 Initialization
---------------------
-1. Server opens listening TCP socket and waits for connection
-2. Client connects to server.
+2.1.1 Initialization Flow
+-------------------------
+1. Server opens listening TCP socket and UDP sockets and waits for a
+   connection on the TCP socket.
+2. Client connects to server TCP socket.
 3. Client sends a File Information packet with the blocksize field set
-   to the wanted blocksize size.
-4. Server determines minimum possible blocksize from the file size and
-   expected blocksize, the number of blocks, and sends the File
-   Information packet back to the client with the true blocksize and
-   number of blocks.
+   to the wanted blocksize.
+4. Server detmermins the number of blocks in the file and sends a File
+   Information packet to the client with the blocksize and number of
+   blocks set.
+5. Client receives the File Information Packet.
 5. Clients sends a 0 length packet over UDP to the server.
 6. Server receives the UDP packet to determine the address to send
    blocks to.
-7. Server sends a UDP Ready packet to the client
+7. Server sends a UDP Ready packet to the client, and the file
+   transmission begins.
 
-File transmission begins.
-
-2.1.2 Data Transmission (server-side)
--------------------------------------
+2.1.2 File Transmission Flow (server-side)
+------------------------------------------
 1. Server sends all the blocks of the file to the client
 2. Server sends a Complete packet to the client
 3. Receive an ACK packet or Complete packet from client
-4. If a Complete packet is received, go to Step 9. If an ACK
+4. If a Complete packet is received, go to Step 8. If an ACK
    packet is received, proceed to step 5.
 5. Figure out which blocks the client is missing from the ACK packet.
 6. Send all missing blocks to the client.
-7. Send Complete packet.
-8. Go to step 3.
-9. Transmission complete, close all connections to the client.
+7. Go to step 2.
+8. Transmission complete, close all connections to the client.
 
-2.1.3 Data Transmission (client-side)
--------------------------------------
+2.1.3 File Transmission Flow (client-side)
+------------------------------------------
 1. Receive blocks from the server until there are no more UDP packets
    being received and the Complete packet is received.
 2. Determine which blocks are missing. If there are no blocks missing,
@@ -62,8 +76,72 @@ File transmission begins.
 5. Send a Complete Packet.
 6. Transmission complete, close all connections to the server.
 
-3 Specification
-===============
+2.2 Initialization
+------------------
+The initialization portion of the transmission is where the client
+connects to the server, the file size is transmitted, and the UDP port
+information is determined. The server starts by opening TCP and UDP
+sockets and binding them to the same interface and port. The server
+then listens for and accepts connections from a client. The client then
+opens a TCP connection to the server.
+
+Once the connection is established, the client sends a File Information
+packet to the server, which contains the client's expected blocksize.
+The server receives the File Information Packet, and determines the
+number of blocks in the file for that blocksize. If the client's
+blocksize is too small for the file (i.e, more than 2^32 blocks in the
+file), then the server may increase the blocksize to lower the amount
+of blocks. The server then sends a File Information packet with the
+blocksize and number of blocks to the client. The client receives the
+File Information packet and can create all of its state, such as the
+tracker for which blocks have and have not been received and other
+implementation-specific details.
+
+The next step in initialization is to determine where the server sends
+File Block packets to. To accomplish this, the client repeatedly sends
+a 0 length UDP packet to the server and wait for a UDP Ready Packet on
+the TCP connection. The server should wait until it receives a UDP
+packet from the client, which lets it know the address to respond to.
+The server then sends a UDP Ready packet to the client and
+initialization completes.
+
+2.3 File Transmission
+---------------------
+The file transmission of the protocol occurs after initialization
+completes (i.e. the client has received UDP Ready from the server).
+
+The file transmission occurs in rounds. A round is where the server
+sends blocks to the client, and the client responds to the server with
+either an ACK or a Complete packet if all the blocks were received.
+After the client sends the response to the server, the round is done,
+and the transmission either ends or another round begins, depending on
+if blocks are missing.
+
+2.3.1 Server Rounds
+-------------------
+In each round, the server sends all missing blocks to the client using
+File Block packets over UDP. It then sends a Complete packet to the
+client through the TCP connection. The server should keep track of
+which blocks have been received by the client avoid sending duplicated
+blocks within a single round. After the Complete packet is sent, the
+server waits for a response from the client.
+
+If the server receives a Complete packet, then the client has received
+all the blocks and is closing the connection. The server should then
+close all connections with the client, since the transaction is
+complete. However, the client sends an ACK packet instead of Complete
+if it is missing blocks from the file. The server should then update
+its tracker and begin a new round.
+
+2.3.2 Client Rounds
+-------------------
+In each round, the client receives File Blocks packets from the server.
+When a File Block is received, the client should update its tracker to
+know which blocks are still missing. It should then write the data in
+packet to the file at the offset determine by the block index and blocksize.
+
+3 Packet Format Specification
+=============================
 
 3.1 Packet Formats
 ------------------
