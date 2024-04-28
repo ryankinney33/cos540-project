@@ -27,7 +27,7 @@ struct PacketGeneric {
 typedef struct FileInformationPacket {
 	ControlHeader_t header; /* PDP-11 Control Packet Header */
 	uint32_t num_blocks; /* Number of blocks in the file - 1 */
-	uint16_t blocksize; /* Number of bytes in a block - 1 */
+	uint16_t blocksize; /* Number of bytes in a block - 1 (includes the 4 stat bits in the MSB) */
 } __attribute__((packed)) FileInformationPacket_t;
 
 /* PDP-11 acknowledgement packet structure */

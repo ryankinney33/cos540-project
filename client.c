@@ -318,6 +318,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	/* Send the wanted blocksize to the server */
 	f_info.num_blocks = 0;
 	f_info.blocksize = htons(expected_blocksize - 1);
+	printf(TCPPREFIX "Requesting a blocksize of %"PRIu16".\n", expected_blocksize);
 	len = send(state.tcp_socket_fd, &f_info, sizeof(f_info), 0);
 	if (len == -1) {
 		fprintf(stderr, TCPPREFIX ERRPREFIX "send: %s\n", strerror(errno));
@@ -340,6 +341,15 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 		return EINVAL;
 	}
 
+	/* Now make sure the file size is possible */
+	if (f_info.blocksize == UINT16_MAX && f_info.num_blocks == UINT32_MAX) {
+		fprintf(stderr, TCPPREFIX ERRPREFIX "The file is too large for this protocol.\n");
+		return EFBIG;
+	} else if (f_info.blocksize == htons(0xF000)) { /* check for zero length file */
+		printf(TCPPREFIX "The file is 0 bytes long. Exiting.\n");
+		return 0;
+	}
+
 	state.block_packet_len = ntohs(f_info.blocksize) + 1 + sizeof(FileBlockPacket_t);
 
 	state.f_block = malloc(state.block_packet_len);
@@ -350,7 +360,7 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 	}
 
 	/* Create the SACK bitmap */
-	state.num_blocks = ntohl(f_info.num_blocks) + 1;
+	state.num_blocks = (size_t)ntohl(f_info.num_blocks) + 1;
 	uint32_t block_status_word_len = (state.num_blocks % 32) ? (state.num_blocks / 32 + 1) : (state.num_blocks / 32);
 	state.sack = calloc(1, sizeof(ACKPacket_t) + block_status_word_len * sizeof(uint32_t));
 	if (state.sack == NULL) {

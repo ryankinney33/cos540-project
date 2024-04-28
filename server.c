@@ -55,25 +55,26 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
 
 	/* See if the blocksize is possible */
 	if (num_blocks > UINT32_MAX + 1UL) {
-		fprintf(stderr, "get_fileinfo: "WARNPREFIX"a blocksize of %"PRIu16" is too small. Increasing.\n", blocksize);
-
 		/* Attempt to get a new blocksize */
 		uint64_t minimum_blocksize = fsize / UINT32_MAX;
 		if (fsize % UINT32_MAX) { /* fix for remainder */
 			minimum_blocksize += 1;
 		}
-		if (minimum_blocksize > 4096) {
-			fprintf(stderr, "get_fileinfo: "ERRPREFIX"the file is too large for this protocol! Exiting.\n");
-			exit(EFBIG);
+		if (minimum_blocksize > 4096) { /* File is too big */
+			blocksize = 0; /* becomes UINT16_MAX when 1 is subtracted later */
+			num_blocks = 0; /* becomes UINT32_MAX when 1 is subtracted later */
+		} else {
+			fprintf(stderr, TCPPREFIX WARNPREFIX "get_fileinfo: The requested blocksize of %"PRIu16" is too small. Increasing to %"PRIu64".\n", blocksize, minimum_blocksize);
+			blocksize = minimum_blocksize;
+			num_blocks = fsize / minimum_blocksize;
+			if (fsize % blocksize) { /* fix for remainder */
+				num_blocks += 1;
+			}
 		}
-		blocksize = minimum_blocksize;
-		num_blocks = fsize / minimum_blocksize;
-		if (fsize % blocksize) { /* fix for remainder */
-			num_blocks += 1;
-		}
+	} else if (num_blocks == 0) { /* Fix zero length files */
+		num_blocks = 1;
+		blocksize = 0xF001; /* Becomes padding = 0xF, blocksize = 0x000 */
 	}
-
-	printf(TCPPREFIX "The file contains %"PRIu64" blocks of %"PRIu16" bytes.\n", num_blocks, blocksize);
 
 	FileInformationPacket_t pkt = {.header=CTRL_HEADER_INITIALIZER(PTYPE_FILEINFO),
 		.num_blocks = htonl(num_blocks - 1),
@@ -118,7 +119,7 @@ static void *udp_loop(void *arg) {
 
 	while(1) {
 		uint64_t num_blocks_sent = 0;
-		ssize_t num_read, num_sent, block_idx = -1;
+		ssize_t len, block_idx = -1;
 
 		printf("\n"UDPPREFIX"Sending blocks to client.\n");
 		do {
@@ -137,27 +138,23 @@ static void *udp_loop(void *arg) {
 			}
 
 			/* This automatically handles the size of the final block */
-			num_read = read(file_fd, send_buf->data_stream, blocksize);
-			if (num_read == -1) {
+			len = read(file_fd, send_buf->data_stream, blocksize);
+			if (len == -1) {
 				/* Error occurred! */
 				fprintf(stderr, UDPPREFIX ERRPREFIX "read: %s\n", strerror(errno));
 				exit(errno);
-			} else if (num_read == 0) {
-				break; /* Nothing read, nothing to send; we are done */
 			}
 
 			/* Set block index */
 			send_buf->index = htonl(block_idx);
 
 			/* Send to the client */
-			num_sent = send(socket_fd, send_buf, num_read + sizeof(FileBlockPacket_t), 0);
-			if (num_sent == -1) {
+			if (send(socket_fd, send_buf, len + sizeof(FileBlockPacket_t), 0) == -1) {
 				fprintf(stderr, UDPPREFIX ERRPREFIX "send: %s\n", strerror(errno));
-				state->status |= UDP_DONE;
-				return NULL;
+				exit(errno);
 			}
 			num_blocks_sent += 1;
-		} while (num_read == blocksize); /* Stop sending if we read the last block */
+		} while (len == blocksize); /* Stop sending if we read the last block */
 
 		printf(UDPPREFIX "Sent \x1B[4m%"PRIu64"\x1B[0m blocks to client.\n", num_blocks_sent);
 
@@ -362,6 +359,8 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 
 	blocksize = ntohs(f_info.blocksize) + 1;
 
+	printf(TCPPREFIX "The client requested a blocksize of %"PRIu16".\n", blocksize);
+
 	/* Build the file information packet with the file size and true blocksize */
 	f_info = get_fileinfo(state.file_fd, blocksize);
 
@@ -370,6 +369,18 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 		fprintf(stderr, TCPPREFIX ERRPREFIX "send: %s\n", strerror(errno));
 		return errno;
 	}
+
+	/* Check if file size was too large */
+	if (f_info.blocksize == UINT16_MAX && f_info.num_blocks == UINT32_MAX) {
+		fprintf(stderr, TCPPREFIX ERRPREFIX "The file is too large for this protocol.\n"
+			"Consider breaking the file into separate smaller files and transmitting them separately.\n");
+		return EFBIG;
+	} else if (f_info.num_blocks == 0 && f_info.blocksize == htons(0xF000)) {
+		printf(TCPPREFIX "The file is 0 bytes long. Exiting.\n");
+		return 0;
+	}
+	printf(TCPPREFIX "The file contains %"PRIu64" blocks of %"PRIu16" bytes.\n", (uint64_t)ntohl(f_info.num_blocks) + 1, ntohs(f_info.blocksize) + 1);
+
 
 	/* Receive the UDP information from the client */
 	if (recvfrom(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr*)&client_addr, &client_addr_len) == -1) {
@@ -399,8 +410,8 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address) {
 	/* Spawn the UDP thread, and run the file transmission */
 	int err = pthread_create(&udp_tid, NULL, udp_loop, &state);
 	if (err == -1) {
-		fprintf(stderr, "pthread_create: "ERRPREFIX"%s\n", strerror(errno));
-		return errno;
+		fprintf(stderr, "pthread_create: "ERRPREFIX"%s\n", strerror(err));
+		return err;
 	}
 	tcp_worker(&state);
 

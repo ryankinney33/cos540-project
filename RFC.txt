@@ -105,9 +105,20 @@ Control header with PType set to UDP Ready. It is 4 octets long.
 
 3.1.3 File Information Packet
 -------------------------------
-This packet is transmitted from the server to the client. It
-communicates the number of blocks in the file being transmitted. The
-File Information Packet is 10 octets in length.
+This packet communicates the size of the file being transmitted. It is
+first sent from the client to the server for the client to specify its
+wanted blocksize. The server sends its own copy of it with the number
+of blocks in the file, along with the corrected blocksize (if the
+number of blocks was too large for that blocksize.)
+
+If the file contains too many blocks (larger than 2^32) with a
+blocksize of 4096, the number of blocks and blocksize are set to the
+maximum values, and stat is set to 1s. This sets an upper limit to the
+possible file length for this protocol to 4096*2^32 octets.
+
+If the requested file has a length of zero, the blocksize and number of
+blocks fields are set to 0, and stat is set to 1s.
+The File Information Packet is 10 octets in length.
 
 Format
 ------
@@ -117,7 +128,7 @@ Format
                  +----+----+--------+--------+--------+
                  |          Number of Blocks          |
                  +----+----+--------+--------+--------+
-                 | Pad|  Block Size |
+                 |Stat|  Block Size |
                  +----+----+--------+
 	                   File Information Packet Format
 Fields
@@ -126,9 +137,12 @@ Number of Blocks: 32 bits
   One less than the number of blocks in the file. This gives a range of
   1 - 4,294,967,296 blocks in the file.
 
-Pad: 4 bits
+Stat: 4 bits
+  This field is normally 0. If the file is too large for the protocol,
+  or the file is zero octets
   Padding such that the end of the packet lands on an octet boundary.
-  The padding is zero.
+  The padding is zero. If the file is too large for the largest
+  blocksize, the padding will be all 1s.
 
 Block Size: 12 bits
   The length in octets of each block of data from the server minus one.
