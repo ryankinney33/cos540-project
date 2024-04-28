@@ -27,7 +27,7 @@
 #include "common.h"
 
 /* Defaults. Overridden by command line arguments. */
-#define SRV_TCP_A   "127.0.0.1"
+#define SRV_TCP_A   "192.168.68.65"
 #define SRV_TCP_P   8888
 #define CLI_UDP_A   "0.0.0.0"
 #define CLI_UDP_P   0 /* 0 makes the OS automatically choose an available port */
@@ -388,36 +388,37 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 		struct pollfd fds[1];
 		fds[0].fd = state.tcp_socket_fd;
 		fds[0].events = POLLIN;
-		int timeout_msecs = 500;
+		int timeout_msecs = 500; /* 500 ms timeout for resending UDP packet */
 		while(1) {
+			/* Send the zero-length UDP packet */
 			err = sendto(state.udp_socket_fd, NULL, 0, 0, (struct sockaddr *)server_address, sizeof(*server_address));
 			if (err == -1) {
 				fprintf(stderr, UDPPREFIX ERRPREFIX "sendto: %s\n", strerror(errno));
 				return errno;
 			}
 
+			/* Wait for the UDP Ready paacket to arrive for the specified timeout */
 			err = poll(fds, 1, timeout_msecs);
 			if (err == -1) {
 				fprintf(stderr, TCPPREFIX ERRPREFIX "poll: %s\n", strerror(errno));
 				return errno;
-			} else if (err > 0) {
+			} else if (err > 0) { /* Check if data arrived */
 				if (!(fds[0].revents & POLLIN)) {
 					fprintf(stderr, TCPPREFIX ERRPREFIX "an unexpected error has occurred.\n");
 					return 1;
 				}
 
-				/* Read the data */
 				UDPReadyPacket_t rdy;
 				len = recv(state.tcp_socket_fd, &rdy, sizeof(rdy), MSG_WAITALL);
-				if (len == -1) {
+				if (len == -1) { /* Error check */
 					fprintf(stderr, TCPPREFIX ERRPREFIX "recv: %s\n", strerror(errno));
 					return errno;
-				} else if (len == 0) {
+				} else if (len == 0) { /* Server disconnected? */
 					fprintf(stderr, TCPPREFIX ERRPREFIX "server unexpectedly closed connection.\n");
 					return 1;
 				}
 				if (verify_header(&rdy.header, PTYPE_UDPRDY))
-					break;
+					break; /* The right packet arrived */
 				fprintf(stderr, TCPPREFIX ERRPREFIX "server sent an invalid packet. Expecting a UDP Ready packet. Aborting.\n");
 				return EINVAL;
 			}
@@ -487,7 +488,7 @@ int main(int argc, char **argv) {
 				fprintf(stderr, "%s: "WARNPREFIX"blocksize specified multiple times.\n", argv[0]);
 			} else {
 				cflag = true;
-				blocksize = parse_port(optarg); /* Not really a port, but fits into about the same range */
+				blocksize = parse_port(optarg); /* Not really a port, but can be treated like one in the range 1-4096 */
 				if (errno || blocksize == 0 || blocksize > 4096) {
 					fprintf(stderr, "%s: "ERRPREFIX"invalid blocksize: %s\n", argv[0], optarg);
 					return 1;
