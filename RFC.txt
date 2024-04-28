@@ -7,11 +7,11 @@ RFC: COS540                                                   R. Kinney
 
 1 Introduction
 ================
-This Problematic Data Protocol 11 (PDP-11) is designed to efficiently
-send a file from a server to connected clients. This document assumes
-the Internet Protocol (IP) is the underlying protocol. Two connections
-are used for sending the file; the Transmission Control Protocol (TCP)
-for control information and the User Datagram Protocol (UDP) for data
+This Problematic Data Protocol 11 (PDP-11) is designed to quickly send
+a file from a server to connected clients. This document assumes the
+Internet Protocol (IP) is the underlying protocol. Two connections are
+used for sending the file; the Transmission Control Protocol (TCP) for
+control information and the User Datagram Protocol (UDP) for data
 transmission. The motivation behind this protocol is to get a good
 grade in COS 540.
 
