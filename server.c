@@ -130,7 +130,7 @@ static void *udp_loop(void *arg) {
 			}
 
 			/* Go to the correct offset in file */
-			if (state->sack != NULL) {
+			if (state->sack != NULL) { /* TODO: investigate using memory mapped I/O instead of seek/read */
 				if (lseek(file_fd, blocksize * block_idx, SEEK_SET) == -1) {
 					fprintf(stderr, UDPPREFIX ERRPREFIX "lseek: %s\n", strerror(errno));
 					exit(errno);

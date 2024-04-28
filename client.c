@@ -187,7 +187,7 @@ void *udp_loop(void *arg) {
 					if (err == -1) {
 						fprintf(stderr, UDPPREFIX ERRPREFIX "lseek: %s\n", strerror(errno));
 						exit(errno);
-					}
+					} /* TODO: investigate using memory mapped I/O instead of seek/write */
 					len = write(file_fd, f_block->data_stream, len - sizeof(*f_block));
 					if (len == -1) {
 						fprintf(stderr, UDPPREFIX ERRPREFIX "write: %s\n", strerror(errno));
