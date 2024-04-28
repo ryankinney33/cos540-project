@@ -8,6 +8,10 @@ for the file transfer, one uses UDP for data transmission, and the other uses
 TCP for control information. It uses the client-server paradigm, and the
 communication protocol is described in the attached file, [RFC.txt](./RFC.txt).
 
+The end of this document contains an analysis of efficiency. The first part talks
+about blocksizes, and the second part talks about performance ofthe acknowledgement
+modes.
+
 Requirements
 ------------
 The basic requirements for the protocol are as follows:
@@ -107,23 +111,21 @@ Additionally the client can specify the IP address and port its UDP socket is
 bound to with the `-b` and `-p` options. For more information, a help message
 is shown with `./client -h`.
 
-Testing and Analysis
---------------------
+Testing and Efficiency Analysis
+-------------------------------
 The protocol was tested with various different configurations on different
 systems. Initial development was performed on a single machine (server listening
 on a loopback address). Once that was working, systems connected on a LAN were
 tested. Next, I tested the protocol on my local machine and the ACG VM. Finally,
 it was tested between the ACG VM and aturing. Additionally, different blocksizes
-and SACK vs NACK modes were tested for efficiency. For file sizes, I used a 1 GB
-file of binary data with my local machines. Additionally, I used a 100 MB file on
-aturing, due to disk space problems, likely caused by other users not deleting
-their test files.
+and SACK vs NACK modes were tested for efficiency. For testing, I used a 1 GB
+file of binary data for the transfer.
 
 I first tested the effect of blocksize on transfer speed, then on packet loss.
 Finally, I tested the efficiency differences between SACK and NACK modes.
 
-### Blocksize
--------------
+### Blocksize Analysis
+----------------------
 The blocksize effects both the overall transfer speed of the protocol (assuming
 no packet loss) as well as the number of packets being dropped.
 
@@ -158,3 +160,96 @@ blocksize increases and the amount of overhead per block decreases, the main
 bottleneck is simply the link speed instead of all the overhead. This is observed in
 Table 1, as the transfer time seems to stop increasing much once the blocksize
 hit 1024.
+
+#### Packet Loss
+To investigate packet loss, connections with multiple hops are needed. To
+achieve this, I performed a test between my local machine and the ACG VM, as well
+as a test between aturing and the ACG VM. I used the SACK acknowledgement mode
+for each of the tests. I used blocksizes of 512, 1024, 1400, 1500, 2048, and 4096
+bytes. In all cases, the ACG VM acted as the client, and the other machine was
+the server.
+
+**Table 2**: Transfer times of a 1 GB file for various blocksizes between my local
+             machine and the ACG VM. Unfortunately, packets were harmed (dropped)
+             in the production of the data.
+
+| Blocksize | Total Number of Blocks |   Real Time   |
+|-----------|------------------------|---------------|
+|    512    |         2097152        |   1m31.034s   |
+|   1024    |         1048576        |   0m51.277s   |
+|   1400    |          766959        |   0m34.531s   |
+|   1500    |          715828        | Didn't finish |
+|   2048    |          524288        | Didn't Finish |
+|   4096    |          262144        | Didn't Finish |
+
+For large blocksizes, the number of packets dropped was large, to the point where
+the final blocks were always dropped and the file transfer never completed (my
+implementation gives up after 25 rounds in a row with all blocks dropped). With
+lower blocksizes, less packets were dropped, and the file transfer was able to
+finish. I believe the cause of this is due to fragmentation and the MTU of the
+routers. For example, the router between my local machine and the public internet
+has an MTU of around 1450 bytes, and many times UDP packets above that size get
+dropped, which was observed in the measurements in Table 2. If a single fragment
+of the UDP packet gets dropped, the entire packet is dropped, so a smaller
+blocksize, which has less fragmentation, allows the transfer to complete
+efficiently. For maximum performance, a small blocksize that strikes a balance
+between transfer speed and packet loss needs to be chosen.
+
+**Table 3**: Transfer times of a 1 GB file for various blocksizes between
+             aturing and the ACG VM. Unfortunately, packets were harmed.
+             (dropped) in the production of this data.
+
+| Blocksize | Total Number of Blocks |   Real Time   |
+|-----------|------------------------|---------------|
+|    512    |         204800         |   1m34.248s   |
+|   1024    |         102400         |   0m48.348s   |
+|   2048    |         524288         |   0m25.661s   |
+|   4096    |         262144         |   0m14.259s   |
+
+Between aturing the ACG VM and aturing, the larger blocksizes did not cause the
+transfer to fail, and significantly sped up the transfer speed. The main
+bottleneck here is the acknowledgement mode used in the transfer.
+
+### Acknowledgement Mode Performance
+------------------------------------
+The protocol supports both SACK and NACK reliability modes, and theoretically
+supports dynamically switching between the two, however the reference client
+implementation does not support dynamically changing the acknowledgement mode.
+Both SACK and NACK have benefits and downsides. One downside to these methods
+is the amount of data that needs to be transmitted from the client to the server
+scales with the number of blocks in the file transfer.
+
+The SACK implementation includes a bitmap where each bit is the status of a
+single block, meaning the size of the SACK packet is fixed throughout the
+transmission and its length in bits is approximately the number of blocks in
+the file (num_blocks/8 bytes). For simpler implementation, the size of the SACK
+is rounded up to the nearest 32 bit word. The main benefit SACK has over the NACK
+mode is when there is a high amount of packet loss, there is less data the client
+needs to send to the server.
+
+The NACK implementation has the client send the 32 bit index for every block
+that was missing in order. Therefore, the NACK length ranges from 4 bytes to
+num_blocks * 4 bytes in length. The benefit to NACK is when there are few packets
+missing, then there is less data the client needs to send to the server for the
+acknowledgement when compared to the SACK mode.
+
+**Table 4**: Transfer times of a 1 GB file for various blocksizes between
+             aturing and the ACG VM for NACK and SACK modes. Unfortunately,
+             packets were harmed. (dropped) in the production of this data.
+
+| Blocksize | Total Number of Blocks |   SACK Time   |   NACK Time   |
+|-----------|------------------------|---------------|---------------|
+|    512    |         2097152        |   1m34.248s   |   1m33.537s   |
+|   1024    |         1048576        |   0m48.348s   |   0m48.646s   |
+|   2048    |          524288        |   0m25.661s   |   0m25.159s   |
+|   4096    |          262144        |   0m14.259s   |   0m13.427s   |
+
+As can be seen in Table 4, there is no large difference in the performance
+of SACK or NACK modes. This is due to when my implementation sends the
+acknowledgement, which is at the end of a round. In earlier rounds, a relatively
+large amount of packets are missing, so the SACK smaller than the equivalent NACK.
+In later rounds, when fewer blocks are missing, the NACK is smaller, and the time
+difference begins to balance out. Ideally, the client would switch to NACK mode
+when the number of missing blocks is less than num_blocks/32 rounded up, which
+would get the benefits of both SACK and NACK and bypass the tradeoffs between the
+two.
