@@ -308,6 +308,14 @@ int run_transmission(const char *file_path, struct sockaddr_in *bind_address, st
 
 	/* Open a non-blocking UDP socket and bind it to the wanted address */
 	state.udp_socket_fd = get_socket(bind_address, SOCK_DGRAM | SOCK_NONBLOCK, false);
+	if (state.udp_socket_fd == -1) {
+		return errno;
+	}
+
+	/* Increase the UDP receive buffer size */
+	if (setsockopt(state.udp_socket_fd, SOL_SOCKET, SO_RCVBUF, &(int){1024 * 1024 * 8}, sizeof(int)) == -1) {
+		fprintf(stderr, UDPPREFIX WARNPREFIX "setsockopt: %s\n", strerror(errno));
+	}
 
 	/* Connect to the server */
 	state.tcp_socket_fd = connect_to_server(server_address);
