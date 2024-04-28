@@ -209,9 +209,9 @@ void *udp_loop(void *arg) {
 
 		/* Check failure condition */
 		successive_zeros = (pkt_recvcount > 0) ? 0 : successive_zeros + 1;
-		if (successive_zeros == 2) {
+		if (successive_zeros == 25) {
 			fprintf(stderr, UDPPREFIX WARNPREFIX"The blocksize may be too large. Consider reducing it and trying again.\n"
-			                UDPPREFIX ERRPREFIX "2 rounds in a row with all blocks dropped. Giving up.\n"
+			                UDPPREFIX ERRPREFIX "25 rounds in a row with all blocks dropped. Giving up.\n"
 				);
 			exit(EXIT_FAILURE);
 		}
