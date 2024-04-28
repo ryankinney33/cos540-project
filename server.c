@@ -88,8 +88,9 @@ FileInformationPacket_t get_fileinfo(int fd, uint16_t blocksize) {
  * Returns -1 if there are no more blocks to send
  */
 static ssize_t get_next_index(ACKPacket_t *ack, size_t num_blocks_total, ssize_t previous_index, uint64_t pkt_sendcount) {
-	if (ack == NULL) /* If NULL, round 1 is active, increment the index */
-		return previous_index + 1; /* Don't need to check if final block, since that is handled elsewhere in this case */
+	if (ack == NULL) {/* If NULL, round 1 is active, increment the index */
+		return (pkt_sendcount == num_blocks_total) ? -1 : previous_index + 1;
+	}
 
 	if (ack->header.type == PTYPE_SACK) {
 		for (size_t i = previous_index + 1; i < num_blocks_total; ++i) {
